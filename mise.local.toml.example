@@ -10,3 +10,8 @@
 [env]
 SECRET_SSID = "your-wifi-ssid"
 SECRET_PASS = "your-wifi-password"
+
+# backlog_user スケッチ用。Backlog の FQDN と個人 API キー。
+# API キーは Backlog の「個人設定 > API」で発行する。
+SECRET_BACKLOG_HOST = "your-space.backlog.com"
+SECRET_BACKLOG_APIKEY = "your-backlog-api-key"
