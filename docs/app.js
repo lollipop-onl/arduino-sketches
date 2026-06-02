@@ -10,6 +10,9 @@ const state = {
 };
 // 中央キャリブレーション offset(KY-023 は個体ごとに中央値がずれる)
 const center = { x: 512, y: 512 };
+// Y 軸の向き補正(canvas は下向き正 + 取付け向きで物理と逆になりがち)。
+// 生値(readout/ログ)は不変のまま、描画(プロット/ゲーム)だけ反転する。
+const INVERT_Y = true;
 
 // ===== DOM =====
 const $ = (id) => document.getElementById(id);
@@ -143,9 +146,10 @@ function drawPlot() {
   plotCtx.moveTo(w / 2, 0); plotCtx.lineTo(w / 2, h);
   plotCtx.moveTo(0, h / 2); plotCtx.lineTo(w, h / 2);
   plotCtx.stroke();
-  // 現在位置(0..1023 を canvas にマップ)
+  // 現在位置(0..1023 を canvas にマップ。Y は INVERT_Y で反転)
   const px = (state.x / 1023) * w;
-  const py = (state.y / 1023) * h;
+  const ny = INVERT_Y ? 1023 - state.y : state.y;
+  const py = (ny / 1023) * h;
   plotCtx.fillStyle = state.sw === 0 ? "#45e07a" : "#4ea1ff";
   plotCtx.beginPath();
   plotCtx.arc(px, py, 8, 0, Math.PI * 2);
@@ -167,9 +171,9 @@ const SPEED = 0.012; // 速度係数
 let prevSw = 1;
 
 function updateGame() {
-  // 中央からの差分を速度に。デッドゾーン内は静止。
+  // 中央からの差分を速度に。デッドゾーン内は静止。Y は INVERT_Y で反転。
   let dx = state.x - center.x;
-  let dy = state.y - center.y;
+  let dy = (INVERT_Y ? -1 : 1) * (state.y - center.y);
   if (Math.abs(dx) < DEAD) dx = 0;
   if (Math.abs(dy) < DEAD) dy = 0;
   dot.x += dx * SPEED;
