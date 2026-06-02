@@ -1,0 +1,13 @@
+# 機密値(認証情報)を含む *.local.* は全て除外する。
+*.local.*
+# テンプレートだけはコミットする。
+!mise.local.toml.example
+
+# env から自動生成される。コミットしない。
+**/arduino_secrets.h
+
+# arduino-cli のビルド成果物
+build/
+*.hex
+*.bin
+*.elf

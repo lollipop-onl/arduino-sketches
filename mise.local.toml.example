@@ -1,0 +1,12 @@
+# このファイルを `mise.local.toml` にコピーして値を埋める。
+# `mise.local.toml` は gitignore 済み(コミットされない)。
+#
+#   cp mise.local.toml.example mise.local.toml
+#
+# [env] に SECRET_ で始まる変数を書くと、コンパイル時に
+# arduino_secrets.h の #define として各スケッチに注入される。
+# 例: SECRET_SSID -> #define SECRET_SSID "..."
+
+[env]
+SECRET_SSID = "your-wifi-ssid"
+SECRET_PASS = "your-wifi-password"

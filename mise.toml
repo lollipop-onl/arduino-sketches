@@ -1,0 +1,38 @@
+# Arduino UNO R4 WiFi sketch project
+# 共有・非機密の設定とコマンド(tasks)を定義する。
+# 認証情報など機密値は mise.local.toml の [env] に書く(gitignore済み)。
+
+[env]
+# 使用ボードと書き込み先ポート。ポートが変わったらここを書き換える。
+# 接続中ポートは `arduino-cli board list` または `mise run ports` で確認できる。
+ARDUINO_FQBN = "arduino:renesas_uno:unor4wifi"
+ARDUINO_PORT = "/dev/cu.usbmodemF0F5BD52E71C2"
+ARDUINO_BAUD = "115200"
+
+[tasks.compile]
+description = "スケッチをコンパイルする: mise run compile <sketch>"
+run = "scripts/compile.sh"
+
+[tasks.upload]
+description = "コンパイルしてボードに書き込む: mise run upload <sketch>"
+run = "scripts/upload.sh"
+
+[tasks.monitor]
+description = "シリアルモニタを開く: mise run monitor"
+run = "scripts/monitor.sh"
+
+[tasks.dev]
+description = "書き込み後そのままシリアルモニタを開く: mise run dev <sketch>"
+run = "scripts/dev.sh"
+
+[tasks.new]
+description = "新しいスケッチの雛形を作る: mise run new <sketch>"
+run = "scripts/new.sh"
+
+[tasks.secrets]
+description = "envからarduino_secrets.hを生成する: mise run secrets <sketch>"
+run = "scripts/gen-secrets.sh"
+
+[tasks.ports]
+description = "接続中のボードとポートを一覧表示する"
+run = "arduino-cli board list"
