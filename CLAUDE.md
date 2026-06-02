@@ -36,8 +36,24 @@ Arduino **UNO R4 WiFi** 専用のスケッチ集。arduino-cli + mise で操作�
 ## サンプル
 - `blink` — Lチカ。認証不要、最初の動作確認用。
 - `wifi_test` — WiFi 接続テスト。`SECRET_SSID`/`SECRET_PASS` が必要。
+- `lcd_i2c` — I2C 1602 LCD に文字表示(本命の I2C 構成)。
+- `lcd_uptime` — 稼働時間を `HH:MM:SS.mmm` でカウントアップ表示。
+- `i2c_scan` — I2C アドレススキャナ + `endTransmission` rc 診断(Wire/Wire1 両対応)。
+- `i2c_diag` — SDA/SCL の Low 固着/短絡を内部 pull-up で判定。
+- `lcd_hello` — パラレル接続版 1602(参考。I2C 不可なときのみ)。
+
+## I2C / LCD
+- I2C バス: `Wire` = `A4`(SDA)/`A5`(SCL)。`Wire1` = Qwiic コネクタ**のみ**(ヘッダの SDA/SCL は Wire)。
+- **UNO R4 は I2C 外部 pull-up 抵抗が必須**(`SDA→5V`, `SCL→5V`, 4.7k〜10k)。無いとバスが HIGH に上がれず `endTransmission` が `rc=5`(timeout)で全アドレス無応答になる。内部 pull-up だけでは不足。
+- `rc` の読み: `0`=応答, `2`=NACK(デバイス無し/SDA-SCL逆), `5`=timeout(pull-up 無 or 線が GND へ短絡)。
+- I2C 1602 LCD (Keyestudio KS0061 / PCF8574): addr `0x27`、lib `LiquidCrystal_I2C`、`lcd.init()` + `lcd.backlight()`。
+- パラレル 1602 (HD44780 / "LCM1602" 単体): lib は要 `arduino-cli lib install "LiquidCrystal"`。コントラスト用に `V0` を可変抵抗(or GND)へ。
+- 日本語: UTF-8 文字列の `print` は不可。**半角カタカナのみ** HD44780 バイトコードで送る(例 `コ`=`0xBA`)。漢字/ひらがなは OLED(SSD1306)+日本語 font library が必要。
+- 配線が合ってるのに無反応なら、まず `i2c_scan` で rc を見る(`rc=5` なら pull-up を疑う)。
 
 ## Claude Code 向けメモ
 - ライブラリ追加は `arduino-cli lib install "<name>"`。
 - 新規スケッチは必ず `sketches/<name>/<name>.ino`(ディレクトリ名 = .ino 名)。
 - 機密値をスケッチや `mise.toml` に直書きしない。必ず `SECRET_*` + `mise.local.toml`。
+- `mise run` 以外で `arduino-cli` を直叩きするときは `$ARDUINO_PORT`/`$ARDUINO_FQBN` が未読込 → `-p`/`--fqbn` を明示する(mise の `[env]` は `mise run` 配下でのみ有効)。
+- ヘッドレスでシリアル出力を読む: `arduino-cli monitor` をバックグラウンド + `sleep` + `head -n N` でファイルへキャプチャ。書込直後は板リセットで取り逃すので 1〜2 回再試行する。
