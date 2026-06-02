@@ -42,6 +42,7 @@ Arduino **UNO R4 WiFi** 専用のスケッチ集。arduino-cli + mise で操作�
 - `i2c_diag` — SDA/SCL の Low 固着/短絡を内部 pull-up で判定。
 - `lcd_hello` — パラレル接続版 1602(参考。I2C 不可なときのみ)。
 - `backlog_user` — Backlog API `users/myself` を叩きユーザー名を LCD 表示。`SECRET_BACKLOG_HOST`/`SECRET_BACKLOG_APIKEY` + WiFi 必須。lib: `ArduinoJson`。
+- `backlog_projects` — Backlog `projects` 一覧を取得し、ボタン(D2→GND)押下ごとに `name (KEY)` を横スクロール表示で巡回。同上 env + lib。
 
 ## I2C / LCD
 - I2C バス: `Wire` = `A4`(SDA)/`A5`(SCL)。`Wire1` = Qwiic コネクタ**のみ**(ヘッダの SDA/SCL は Wire)。
