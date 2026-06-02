@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JoyStick → Browser (Web Serial)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>JoyStick → Browser</h1>
+    <p class="sub">UNO R4 + KY-023 を USB シリアル(Web Serial API)でブラウザへ</p>
+  </header>
+
+  <div id="unsupported" class="warn hidden">
+    このブラウザは Web Serial API 非対応です。Chrome / Edge(デスクトップ)で開いてください。
+  </div>
+
+  <div class="toolbar">
+    <button id="connect">接続</button>
+    <button id="disconnect" disabled>切断</button>
+    <span id="status" class="status">未接続</span>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="dash">ダッシュボード</button>
+    <button class="tab" data-tab="game">ミニゲーム</button>
+  </nav>
+
+  <!-- ダッシュボード -->
+  <section id="dash" class="panel active">
+    <div class="dash-grid">
+      <div class="card">
+        <h2>XY ポジション</h2>
+        <canvas id="plot" width="240" height="240"></canvas>
+        <button id="calibrate">中央セット</button>
+      </div>
+      <div class="card">
+        <h2>生値</h2>
+        <p class="readout">X: <span id="vx">-</span></p>
+        <p class="readout">Y: <span id="vy">-</span></p>
+        <p class="readout">
+          BTN:
+          <span id="led" class="led"></span>
+          <span id="vsw">-</span>
+        </p>
+        <p class="readout small">中央 offset: <span id="voff">512, 512</span></p>
+      </div>
+      <div class="card log-card">
+        <h2>raw ログ</h2>
+        <pre id="log" class="log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ミニゲーム -->
+  <section id="game" class="panel">
+    <div class="card">
+      <h2>ドットを動かそう</h2>
+      <p class="small">ジョイスティックで移動 / ボタンで色変化</p>
+      <canvas id="stage" width="480" height="360"></canvas>
+    </div>
+  </section>
+
+  <footer>
+    <p class="small">配線: VRx→A0 / VRy→A1 / SW→D2 / +5V→5V / GND→GND ・ sketch: <code>joystick_serial</code></p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
