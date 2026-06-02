@@ -44,6 +44,7 @@ Arduino **UNO R4 WiFi** 専用のスケッチ集。arduino-cli + mise で操作�
 - `backlog_user` — Backlog API `users/myself` を叩きユーザー名を LCD 表示。`SECRET_BACKLOG_HOST`/`SECRET_BACKLOG_APIKEY` + WiFi 必須。lib: `ArduinoJson`。
 - `backlog_projects` — Backlog `projects` 一覧を取得し、ボタン(D2→GND)押下ごとに `name (KEY)` を横スクロール表示で巡回。同上 env + lib。
 - `joystick_serial` — KY-023 ジョイスティックの X/Y/ボタンを `x,y,sw` CSV でシリアル送出(115200)。配線 VRx→A0/VRy→A1/SW→D2。`docs/` の Web Serial ページから読む。
+- `joystick_lcd` — 上記 KY-023 を I2C 1602 LCD(0x27)に表示(1行目 `X/Y` 生値、2行目 `BTN`/方向)。Serial CSV も併出。lib: `LiquidCrystal_I2C`。I2C 外部 pull-up 必須。
 
 ## docs/ (GitHub Pages)
 - `docs/` を GH Pages root に公開。Web Serial API で USB シリアルを直読みする静的ページ。
