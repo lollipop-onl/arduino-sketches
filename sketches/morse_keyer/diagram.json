@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "author": "arduino-sketches",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-uno-r4-wifi", "id": "uno", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-lcd1602", "id": "lcd", "top": -170, "left": 50, "attrs": { "pins": "i2c" } },
+    { "type": "wokwi-pushbutton", "id": "btnKey", "top": 230, "left": -20, "attrs": { "color": "green", "label": "KEY (D2)" } },
+    { "type": "wokwi-pushbutton", "id": "btnClear", "top": 230, "left": 160, "attrs": { "color": "red", "label": "CLR (D3)" } },
+    { "type": "wokwi-resistor", "id": "r1", "top": 110, "left": 300, "attrs": { "value": "220" } },
+    { "type": "wokwi-led", "id": "led", "top": 110, "left": 380, "attrs": { "color": "yellow", "label": "D4" } },
+    { "type": "wokwi-buzzer", "id": "bz", "top": 230, "left": 360, "attrs": { "volume": "0.1" } }
+  ],
+  "connections": [
+    [ "uno:A4", "lcd:SDA", "green", [] ],
+    [ "uno:A5", "lcd:SCL", "gold", [] ],
+    [ "uno:5V", "lcd:VCC", "red", [] ],
+    [ "uno:GND.1", "lcd:GND", "black", [] ],
+
+    [ "uno:2", "btnKey:1.l", "blue", [] ],
+    [ "btnKey:2.l", "uno:GND.2", "black", [] ],
+
+    [ "uno:3", "btnClear:1.l", "violet", [] ],
+    [ "btnClear:2.l", "uno:GND.2", "black", [] ],
+
+    [ "uno:4", "r1:1", "orange", [] ],
+    [ "r1:2", "led:A", "orange", [] ],
+    [ "led:C", "uno:GND.3", "black", [] ],
+
+    [ "uno:5", "bz:1", "limegreen", [] ],
+    [ "bz:2", "uno:GND.3", "black", [] ]
+  ],
+  "dependencies": {}
+}

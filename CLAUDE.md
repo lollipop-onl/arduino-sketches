@@ -52,6 +52,14 @@ Arduino **UNO R4 WiFi** 専用のスケッチ集。arduino-cli + mise で操作�
 - `joystick_serial` 用のダッシュボード+ミニゲーム。Chrome/Edge のみ(Web Serial 非対応ブラウザは警告)。
 - URL: https://lollipop-onl.github.io/arduino-sketches/ ・ 詳細は `docs/README.md`。
 
+## 配線をコードで管理 (Wokwi)
+- 配線図を `sketches/<name>/diagram.json` に置く(部品と結線を JSON で記述 = 回路の Single Source of Truth)。`wokwi.toml` を併置すると実機なしでスケッチごとシミュレーションできる。
+- いちばん手早い実行: [wokwi.com](https://wokwi.com) で UNO R4 WiFi を選び、`.ino` と `diagram.json` を貼って Run(クラウドでコンパイル → 配線ミスもその場で発見)。
+- ローカル(VS Code 拡張 "Wokwi Simulator"): 先に `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi --output-dir sketches/<name>/build sketches/<name>` で `build/` に成果物を出し、F1 → `Wokwi: Start Simulator`。`build/` は gitignore 済み。
+- 部品 type / ピン名(例 `board-uno-r4-wifi`, `wokwi-lcd1602` の `pins:i2c`)は Wokwi エディタが補完・検証する。赤くなったら候補から選び直すだけ。
+- 注意: sim では I2C の外部 pull-up を省略してよい(実機は必須)。LCD の SDA/SCL は `A4`/`A5` に結線(動かない時は基板の専用 `SDA`/`SCL` ピンへ。同一バス)。
+- 現状 `morse_keyer` に `diagram.json` + `wokwi.toml` あり。
+
 ## I2C / LCD
 - I2C バス: `Wire` = `A4`(SDA)/`A5`(SCL)。`Wire1` = Qwiic コネクタ**のみ**(ヘッダの SDA/SCL は Wire)。
 - **UNO R4 は I2C 外部 pull-up 抵抗が必須**(`SDA→5V`, `SCL→5V`, 4.7k〜10k)。無いとバスが HIGH に上がれず `endTransmission` が `rc=5`(timeout)で全アドレス無応答になる。内部 pull-up だけでは不足。
