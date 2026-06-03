@@ -19,6 +19,8 @@
 //             クリア: 片足 -> D3 / もう片足 -> GND  (INPUT_PULLUP)
 //   [LED]     D4 -> [220〜330Ω] -> LED アノード, LED カソード -> GND
 //             (打鍵に同期して点灯。基板上の LED_BUILTIN も同時に光る)
+//   [ブザー]  パッシブ(圧電)ブザー: + -> D5 / - -> GND
+//             (打鍵中=ドット/ダッシュ送出中だけ鳴る = サイドトーン。tone() 使用)
 //   [LCD I2C] GND->GND / VCC->5V / SDA->A4 / SCL->A5
 //     ※ UNO R4 は I2C 外部 pull-up 抵抗が必須 (SDA->5V, SCL->5V, 4.7k〜10k)。
 //        無いと LCD が無反応になる(CLAUDE.md / i2c_scan 参照)。
@@ -33,6 +35,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);  // (address, cols, rows)
 const uint8_t PIN_KEY = 2;    // 電鍵ボタン -> GND
 const uint8_t PIN_CLEAR = 3;  // クリアボタン -> GND
 const uint8_t PIN_LED = 4;    // 外部 LED (+抵抗) -> GND
+const uint8_t PIN_BUZZER = 5; // パッシブ(圧電)ブザー + -> GND
 
 // --- タイミング定数 [ms] (打ちやすさに合わせて調整する) ---
 const unsigned long DEBOUNCE_MS = 20;      // チャタリング除去
@@ -40,6 +43,7 @@ const unsigned long DASH_MS = 250;         // これ以上の押下は「-」
 const unsigned long LETTER_GAP_MS = 700;   // この無音で1文字確定
 const unsigned long WORD_GAP_MS = 1500;    // この無音で単語区切り(空白)
 const unsigned long LED_FLASH_MS = 80;     // 確定/クリア時の確認フラッシュ
+const unsigned int BUZZER_HZ = 800;        // ブザー(サイドトーン)の高さ[Hz]
 
 const int MSG_MAX = 64;  // 解読テキストの保持上限(超過分は先頭から捨てる)
 const int SYM_MAX = 7;   // 1文字あたりの符号(・-)の最大数
@@ -102,6 +106,15 @@ void setLed(bool on) {
   digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
 }
 
+// 電鍵を押している間だけブザーを鳴らす(状態が変わった時だけ tone/noTone)。
+void setBuzzer(bool on) {
+  static bool cur = false;
+  if (on == cur) return;
+  cur = on;
+  if (on) tone(PIN_BUZZER, BUZZER_HZ);
+  else noTone(PIN_BUZZER);
+}
+
 // 符号(・-)を1文字に解読。未定義なら 0 を返す。
 char decode(const char* code) {
   for (const MorseMap& m : MORSE) {
@@ -154,8 +167,10 @@ void setup() {
   pinMode(PIN_KEY, INPUT_PULLUP);
   pinMode(PIN_CLEAR, INPUT_PULLUP);
   pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_BUZZER, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   setLed(false);
+  noTone(PIN_BUZZER);
 
   lcd.init();
   lcd.backlight();
@@ -225,8 +240,11 @@ void loop() {
     }
   }
 
-  // --- LED: 打鍵中は点灯 + 確定/クリアの確認フラッシュ ---
+  // --- LED / ブザー ---
+  // LED  : 打鍵中は点灯 + 確定/クリアの確認フラッシュ
+  // ブザー: 実際に符号を送出している(電鍵を押している)間だけ鳴らす = サイドトーン
   setLed(keyBtn.pressed || (now < ledFlashUntil));
+  setBuzzer(keyBtn.pressed);
 
   // --- 表示更新(変化があった時だけ → I2C 負荷とチラつきを抑える) ---
   if (dirty) {
