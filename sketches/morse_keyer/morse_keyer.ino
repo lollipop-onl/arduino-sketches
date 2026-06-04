@@ -198,7 +198,10 @@ void resetMessage() {
   message[0] = '\0';
   symLen = 0;
   symbol[0] = '\0';
-  spaceAdded = true;  // 先頭に空白を入れない
+  spaceAdded = true;   // 先頭に空白を入れない
+  qso = QSO_IDLE;      // 状態を待機へ
+  setBuzzer(false);    // BOT 送出中の鳴動を止める
+  setLed(false);
 }
 
 // 2行を毎回フル幅(16字)で上書き → clear() 不要でチラつかない。
