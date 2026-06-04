@@ -48,7 +48,7 @@ const unsigned long LED_FLASH_MS = 80;     // 確定/クリア時の確認フラ
 const unsigned int BUZZER_HZ = 800;        // ブザー(サイドトーン)の高さ[Hz]
 
 const int MSG_MAX = 64;  // 解読テキストの保持上限(超過分は先頭から捨てる)
-const int SYM_MAX = 7;   // 1文字あたりの符号(・-)の最大数
+const int SYM_MAX = 10;  // 1符号列の最大シンボル数(prosign を含むため拡張)
 
 // --- モールス符号表 (A-Z, 0-9) ---
 struct MorseMap {
@@ -67,6 +67,37 @@ const MorseMap MORSE[] = {
     {"-....", '6'}, {"--...", '7'}, {"---..", '8'}, {"----.", '9'},
 };
 
+// デバウンス付きボタン。pressed が確定状態(true=押下)。
+struct Button {
+  uint8_t pin;
+  bool pressed;
+  bool lastRaw;
+  unsigned long tChange;
+};
+
+// --- prosign(手順信号)表: 符号列 -> 識別子 ---
+// 通常文字と区別するため decode より先に照合する。
+enum Prosign { PRO_NONE, PRO_KA, PRO_AR, PRO_K, PRO_SK, PRO_BT };
+struct ProsignMap {
+  const char* code;
+  Prosign id;
+};
+const ProsignMap PROSIGNS[] = {
+    {"-.-.-", PRO_KA},   // 交信開始
+    {".-.-.", PRO_AR},   // 通信文終わり
+    {"...-.-", PRO_SK},  // 交信終了
+    {"-...-", PRO_BT},   // 区切り
+    // K(-.-)は文字 K と同符号 → 表には入れず文脈で判定(Task 4)
+};
+
+// 符号列を prosign 識別子に変換。該当なしは PRO_NONE。
+Prosign matchProsign(const char* sym) {
+  for (const ProsignMap& p : PROSIGNS) {
+    if (strcmp(p.code, sym) == 0) return p.id;
+  }
+  return PRO_NONE;
+}
+
 // --- 状態 ---
 char message[MSG_MAX + 1];  // 解読済みテキスト(null 終端)
 int msgLen = 0;
@@ -79,13 +110,6 @@ unsigned long ledFlashUntil = 0;  // この時刻まで LED を点ける(確認�
 bool spaceAdded = true;           // 直近の無音で空白を入れ済みか(先頭抑止で true)
 bool dirty = true;                // LCD 再描画が必要か
 
-// デバウンス付きボタン。pressed が確定状態(true=押下)。
-struct Button {
-  uint8_t pin;
-  bool pressed;
-  bool lastRaw;
-  unsigned long tChange;
-};
 Button keyBtn = {PIN_KEY, false, false, 0};
 Button clearBtn = {PIN_CLEAR, false, false, 0};
 
