@@ -57,11 +57,20 @@ Arduino **UNO R4 WiFi** 専用のスケッチ集。arduino-cli + mise で操作�
 - `backlog_projects` — Backlog `projects` 一覧を取得し、ボタン(D2→GND)押下ごとに `name (KEY)` を横スクロール表示で巡回。同上 env + lib。
 - `joystick_serial` — KY-023 ジョイスティックの X/Y/ボタンを `x,y,sw` CSV でシリアル送出(115200)。配線 VRx→A0/VRy→A1/SW→D2。`docs/` の Web Serial ページから読む。
 - `joystick_lcd` — 上記 KY-023 を I2C 1602 LCD(0x27)に表示(1行目 `X/Y` 生値、2行目 `BTN`/方向)。Serial CSV も併出。lib: `LiquidCrystal_I2C`。I2C 外部 pull-up 必須。
+- `morse_keyer` — ボタン(D2)を電鍵として叩いたモールス信号を A-Z/0-9 に解読し I2C 1602 LCD に表示(複数ワード可)。短押し=`・`/長押し=`-`、無音長で文字・単語を確定。D3 で表示クリア(本体 RESET でも可)、LED(D4)とパッシブブザー(D5)が打鍵に同期(サイドトーン)。lib: `LiquidCrystal_I2C`。I2C 外部 pull-up 必須。
 
 ## docs/ (GitHub Pages)
 - `docs/` を GH Pages root に公開。Web Serial API で USB シリアルを直読みする静的ページ。
 - `joystick_serial` 用のダッシュボード+ミニゲーム。Chrome/Edge のみ(Web Serial 非対応ブラウザは警告)。
 - URL: https://lollipop-onl.github.io/arduino-sketches/ ・ 詳細は `docs/README.md`。
+
+## 配線をコードで管理 (Wokwi)
+- 配線図を `sketches/<name>/diagram.json` に置く(部品と結線を JSON で記述 = 回路の Single Source of Truth)。`wokwi.toml` を併置すると実機なしでスケッチごとシミュレーションできる。
+- いちばん手早い実行: [wokwi.com](https://wokwi.com) で UNO R4 WiFi を選び、`.ino` と `diagram.json` を貼って Run(クラウドでコンパイル → 配線ミスもその場で発見)。
+- ローカル(VS Code 拡張 "Wokwi Simulator"): 先に `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi --output-dir sketches/<name>/build sketches/<name>` で `build/` に成果物を出し、F1 → `Wokwi: Start Simulator`。`build/` は gitignore 済み。
+- 部品 type / ピン名(例 `board-uno-r4-wifi`, `wokwi-lcd1602` の `pins:i2c`)は Wokwi エディタが補完・検証する。赤くなったら候補から選び直すだけ。
+- 注意: sim では I2C の外部 pull-up を省略してよい(実機は必須)。LCD の SDA/SCL は `A4`/`A5` に結線(動かない時は基板の専用 `SDA`/`SCL` ピンへ。同一バス)。
+- 現状 `morse_keyer` に `diagram.json` + `wokwi.toml` あり。
 
 ## I2C / LCD
 - I2C バス: `Wire` = `A4`(SDA)/`A5`(SCL)。`Wire1` = Qwiic コネクタ**のみ**(ヘッダの SDA/SCL は Wire)。

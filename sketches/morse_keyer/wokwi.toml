@@ -1,0 +1,15 @@
+# Wokwi シミュレーション設定 (VS Code 拡張 "Wokwi Simulator" 用)。
+# 配線は diagram.json、こちらは「どのファームを動かすか」を指す。
+# firmware / elf のパスは この wokwi.toml からの相対 (= sketches/morse_keyer/)。
+# build/ は .gitignore 済みなので成果物はコミットされない。
+#
+# 使い方:
+#   1) ビルドして成果物を build/ に出力する:
+#        arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi \
+#          --output-dir sketches/morse_keyer/build sketches/morse_keyer
+#   2) VS Code で F1 -> "Wokwi: Start Simulator"。
+#   ※ ビルド不要で手早く試すなら wokwi.com に .ino と diagram.json を貼るだけでも可。
+[wokwi]
+version = 1
+firmware = "build/morse_keyer.ino.hex"
+elf = "build/morse_keyer.ino.elf"
