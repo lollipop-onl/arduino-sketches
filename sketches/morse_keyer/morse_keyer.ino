@@ -281,6 +281,34 @@ void tickBot(unsigned long now) {
   botPhaseUntil = now + ((mark == '-') ? UNIT_MS * 3 : UNIT_MS);
 }
 
+// prosign を解釈し、状態遷移と BOT 応答を起動する。
+void handleProsign(Prosign p) {
+  switch (p) {
+    case PRO_KA:  // 交信開始 -> どうぞ
+      botStart("QRV");
+      break;
+    case PRO_AR:  // 通信文終わり -> 了解
+      botStart("R");
+      break;
+    case PRO_K:   // どうぞ -> 直前メッセージをエコー
+      if (msgLen > 0) {
+        botStart(message);
+      } else {
+        botStart("QRZ");  // 何も無ければ「誰か呼んだ?」
+      }
+      break;
+    case PRO_SK:  // 交信終了 -> さよなら、IDLE へ
+      botStart("73");
+      // botStart 完了時に IDLE へ戻る
+      break;
+    case PRO_BT:  // 区切り: 空白を入れるだけ(BOT 応答なし)
+      if (msgLen > 0 && message[msgLen - 1] != ' ') appendChar(' ');
+      break;
+    default:
+      break;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(PIN_KEY, INPUT_PULLUP);
@@ -338,14 +366,26 @@ void loop() {
     // --- 無音による確定(電鍵を離している間だけ判定) ---
     if (!keyBtn.pressed) {
       if (symLen > 0 && (now - releaseTime) >= LETTER_GAP_MS) {
-        // 1文字確定
-        char c = decode(symbol);
-        char out = c ? c : '?';
-        Serial.print("letter ");
-        Serial.print(symbol);
-        Serial.print(" -> ");
-        Serial.println(out);
-        appendChar(out);
+        // 符号列確定: prosign を先に照合する
+        Prosign pro = matchProsign(symbol);
+
+        // over 判定: 単独 "-.-" かつ語境界 = 送信権を渡す(本物の慣習)
+        bool atWordBoundary = (msgLen == 0 || message[msgLen - 1] == ' ');
+        bool isOver = (strcmp(symbol, "-.-") == 0 && atWordBoundary);
+
+        if (pro != PRO_NONE || isOver) {
+          Serial.print("prosign ");
+          Serial.println(symbol);
+          handleProsign(isOver ? PRO_K : pro);
+        } else {
+          char c = decode(symbol);
+          char out = c ? c : '?';
+          Serial.print("letter ");
+          Serial.print(symbol);
+          Serial.print(" -> ");
+          Serial.println(out);
+          appendChar(out);
+        }
         symLen = 0;
         symbol[0] = '\0';
         ledFlashUntil = now + LED_FLASH_MS;
