@@ -75,6 +75,8 @@ struct Button {
   unsigned long tChange;
 };
 
+enum QsoState { QSO_IDLE, QSO_ME_SENDING, QSO_BOT_SENDING };
+
 // --- prosign(手順信号)表: 符号列 -> 識別子 ---
 // 通常文字と区別するため decode より先に照合する。
 enum Prosign { PRO_NONE, PRO_KA, PRO_AR, PRO_K, PRO_SK, PRO_BT };
@@ -109,6 +111,19 @@ unsigned long releaseTime = 0;    // 最後に離した時刻(無音判定の起
 unsigned long ledFlashUntil = 0;  // この時刻まで LED を点ける(確認フラッシュ)
 bool spaceAdded = true;           // 直近の無音で空白を入れ済みか(先頭抑止で true)
 bool dirty = true;                // LCD 再描画が必要か
+
+QsoState qso = QSO_IDLE;
+
+// 状態遷移ヘルパ(Serial ログ付き)。
+void setState(QsoState next) {
+  if (qso == next) return;
+  Serial.print("state ");
+  Serial.print((int)qso);
+  Serial.print("->");
+  Serial.println((int)next);
+  qso = next;
+  dirty = true;
+}
 
 Button keyBtn = {PIN_KEY, false, false, 0};
 Button clearBtn = {PIN_CLEAR, false, false, 0};
@@ -224,6 +239,7 @@ void loop() {
   // --- 電鍵ボタン ---
   int e = updateButton(keyBtn);
   if (e == 1) {  // 押し始め
+    if (qso == QSO_IDLE) setState(QSO_ME_SENDING);
     pressStart = now;
     spaceAdded = false;  // 新しい入力 → 次の長い無音で空白を入れてよい
     dirty = true;        // LED/プレビュー更新のため
