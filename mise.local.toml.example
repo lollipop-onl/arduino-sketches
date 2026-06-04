@@ -15,3 +15,7 @@ SECRET_PASS = "your-wifi-password"
 # API キーは Backlog の「個人設定 > API」で発行する。
 SECRET_BACKLOG_HOST = "your-space.backlog.com"
 SECRET_BACKLOG_APIKEY = "your-backlog-api-key"
+
+# morse_gemini スケッチ用。Google Gemini API キー。
+# Google AI Studio (https://aistudio.google.com/) で発行する。
+SECRET_GEMINI_APIKEY = "your-gemini-api-key"

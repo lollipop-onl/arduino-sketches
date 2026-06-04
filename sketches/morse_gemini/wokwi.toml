@@ -1,0 +1,19 @@
+# Wokwi シミュレーション設定 (VS Code 拡張 "Wokwi Simulator" 用)。
+# 配線は diagram.json、こちらは「どのファームを動かすか」を指す。
+# firmware / elf のパスは この wokwi.toml からの相対 (= sketches/morse_gemini/)。
+# build/ は .gitignore 済みなので成果物はコミットされない。
+#
+# 注意: Wokwi シミュレーター環境には WiFi/インターネット接続がない。
+#       そのため Gemini API 呼び出し(TX...表示後)はタイムアウトし "QRX" を送出する。
+#       電鍵の打鍵・モールス解読・LED/ブザー応答はシム上でも動作確認できる。
+#
+# 使い方:
+#   1) ビルドして成果物を build/ に出力する:
+#        arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi \
+#          --output-dir sketches/morse_gemini/build sketches/morse_gemini
+#   2) VS Code で F1 -> "Wokwi: Start Simulator"。
+#   ※ ビルド不要で手早く試すなら wokwi.com に .ino と diagram.json を貼るだけでも可。
+[wokwi]
+version = 1
+firmware = "build/morse_gemini.ino.hex"
+elf = "build/morse_gemini.ino.elf"
