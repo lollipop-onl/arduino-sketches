@@ -50,6 +50,8 @@ const unsigned int BUZZER_HZ = 800;        // ブザー(サイドトーン)の�
 const int MSG_MAX = 64;  // 解読テキストの保持上限(超過分は先頭から捨てる)
 const int SYM_MAX = 10;  // 1符号列の最大シンボル数(prosign を含むため拡張)
 
+const unsigned long UNIT_MS = 120;  // BOT 送出の1単位長(dot=1, dash=3)
+
 // --- モールス符号表 (A-Z, 0-9) ---
 struct MorseMap {
   const char* code;
@@ -112,6 +114,14 @@ unsigned long ledFlashUntil = 0;  // この時刻まで LED を点ける(確認�
 bool spaceAdded = true;           // 直近の無音で空白を入れ済みか(先頭抑止で true)
 bool dirty = true;                // LCD 再描画が必要か
 
+// BOT が送出中のテキスト(例 "QRV")とその進行位置。
+char botText[24];        // 送出する応答テキスト(英大文字/数字/空白)
+int  botCharIdx = 0;     // botText 内の現在文字
+const char* botCode = "";// 現在文字の符号(MORSE から引く)
+int  botMarkIdx = 0;     // botCode 内の現在シンボル
+bool botOn = false;      // 今 ON(発音中)か
+unsigned long botPhaseUntil = 0;  // 現フェーズの終了時刻
+
 QsoState qso = QSO_IDLE;
 
 // 状態遷移ヘルパ(Serial ログ付き)。
@@ -164,6 +174,15 @@ char decode(const char* code) {
   return 0;
 }
 
+// 1文字 -> 符号列(・-)。未定義文字は "" を返す。
+const char* encode(char c) {
+  if (c >= 'a' && c <= 'z') c -= 32;  // 小文字を大文字へ
+  for (const MorseMap& m : MORSE) {
+    if (m.ch == c) return m.code;
+  }
+  return "";  // 空白などは符号なし(語間ギャップで処理)
+}
+
 // 解読テキストへ1字追加(上限超過分は先頭から捨てる)。
 void appendChar(char c) {
   if (msgLen >= MSG_MAX) {
@@ -203,6 +222,65 @@ void render() {
   lcd.print(line);
 }
 
+// BOT 応答送出を開始する。text を 1 要素ずつ送る。
+void botStart(const char* text) {
+  strncpy(botText, text, sizeof(botText) - 1);
+  botText[sizeof(botText) - 1] = '\0';
+  botCharIdx = 0;
+  botMarkIdx = 0;
+  botOn = false;
+  botPhaseUntil = 0;
+  botCode = encode(botText[0]);
+  Serial.print("bot-send ");
+  Serial.println(botText);
+  setState(QSO_BOT_SENDING);
+}
+
+// BOT 送出を 1 ステップ進める。送出完了で IDLE へ戻す。
+// LCD 2行目に「打ち終わった文字まで」を出すため botCharIdx を表示側で使う。
+void tickBot(unsigned long now) {
+  if (qso != QSO_BOT_SENDING) return;
+  if (now < botPhaseUntil) return;  // 現フェーズ継続中
+
+  if (botOn) {
+    // ON 終了 → 要素間ギャップ(1単位)へ
+    botOn = false;
+    setBuzzer(false);
+    setLed(false);
+    botMarkIdx++;
+    botPhaseUntil = now + UNIT_MS;  // 要素間
+    return;
+  }
+
+  // OFF フェーズ明け: 次のシンボル/文字/語へ
+  if (botCode[botMarkIdx] == '\0') {
+    // 現文字を打ち終えた → 次の文字へ(文字間ギャップ込み)
+    botCharIdx++;
+    if (botText[botCharIdx] == '\0') {  // 全文字送出完了
+      setState(QSO_IDLE);
+      dirty = true;
+      return;
+    }
+    botMarkIdx = 0;
+    if (botText[botCharIdx] == ' ') {
+      botCode = "";
+      botPhaseUntil = now + UNIT_MS * 7;  // 語間
+      return;
+    }
+    botCode = encode(botText[botCharIdx]);
+    botPhaseUntil = now + UNIT_MS * 3;  // 文字間(直前の要素間1+追加で計3相当)
+    dirty = true;  // 表示の文字数更新
+    return;
+  }
+
+  // 次のシンボルを ON
+  char mark = botCode[botMarkIdx];
+  botOn = true;
+  setBuzzer(true);
+  setLed(true);
+  botPhaseUntil = now + ((mark == '-') ? UNIT_MS * 3 : UNIT_MS);
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(PIN_KEY, INPUT_PULLUP);
@@ -236,57 +314,61 @@ void loop() {
     dirty = true;
   }
 
-  // --- 電鍵ボタン ---
-  int e = updateButton(keyBtn);
-  if (e == 1) {  // 押し始め
-    if (qso == QSO_IDLE) setState(QSO_ME_SENDING);
-    pressStart = now;
-    spaceAdded = false;  // 新しい入力 → 次の長い無音で空白を入れてよい
-    dirty = true;        // LED/プレビュー更新のため
-  } else if (e == -1) {  // 離した → 押下時間で ・ か - を決める
-    unsigned long dur = now - pressStart;
-    char mark = (dur < DASH_MS) ? '.' : '-';
-    if (symLen < SYM_MAX) {
-      symbol[symLen++] = mark;
-      symbol[symLen] = '\0';
-    }
-    releaseTime = now;
-    Serial.print("mark ");
-    Serial.println(mark);
-    dirty = true;
-  }
-
-  // --- 無音による確定(電鍵を離している間だけ判定) ---
-  if (!keyBtn.pressed) {
-    if (symLen > 0 && (now - releaseTime) >= LETTER_GAP_MS) {
-      // 1文字確定
-      char c = decode(symbol);
-      char out = c ? c : '?';
-      Serial.print("letter ");
-      Serial.print(symbol);
-      Serial.print(" -> ");
-      Serial.println(out);
-      appendChar(out);
-      symLen = 0;
-      symbol[0] = '\0';
-      ledFlashUntil = now + LED_FLASH_MS;
-      dirty = true;
-    } else if (symLen == 0 && msgLen > 0 && !spaceAdded &&
-               message[msgLen - 1] != ' ' &&
-               (now - releaseTime) >= WORD_GAP_MS) {
-      // 単語区切り(空白を1つだけ)
-      appendChar(' ');
-      spaceAdded = true;
-      Serial.println("[space]");
+  // --- 電鍵ボタン: BOT 送出中は入力を無視 ---
+  if (qso != QSO_BOT_SENDING) {
+    int e = updateButton(keyBtn);
+    if (e == 1) {  // 押し始め
+      if (qso == QSO_IDLE) setState(QSO_ME_SENDING);
+      pressStart = now;
+      spaceAdded = false;  // 新しい入力 → 次の長い無音で空白を入れてよい
+      dirty = true;        // LED/プレビュー更新のため
+    } else if (e == -1) {  // 離した → 押下時間で ・ か - を決める
+      unsigned long dur = now - pressStart;
+      char mark = (dur < DASH_MS) ? '.' : '-';
+      if (symLen < SYM_MAX) {
+        symbol[symLen++] = mark;
+        symbol[symLen] = '\0';
+      }
+      releaseTime = now;
+      Serial.print("mark ");
+      Serial.println(mark);
       dirty = true;
     }
+
+    // --- 無音による確定(電鍵を離している間だけ判定) ---
+    if (!keyBtn.pressed) {
+      if (symLen > 0 && (now - releaseTime) >= LETTER_GAP_MS) {
+        // 1文字確定
+        char c = decode(symbol);
+        char out = c ? c : '?';
+        Serial.print("letter ");
+        Serial.print(symbol);
+        Serial.print(" -> ");
+        Serial.println(out);
+        appendChar(out);
+        symLen = 0;
+        symbol[0] = '\0';
+        ledFlashUntil = now + LED_FLASH_MS;
+        dirty = true;
+      } else if (symLen == 0 && msgLen > 0 && !spaceAdded &&
+                 message[msgLen - 1] != ' ' &&
+                 (now - releaseTime) >= WORD_GAP_MS) {
+        // 単語区切り(空白を1つだけ)
+        appendChar(' ');
+        spaceAdded = true;
+        Serial.println("[space]");
+        dirty = true;
+      }
+    }
   }
 
-  // --- LED / ブザー ---
-  // LED  : 打鍵中は点灯 + 確定/クリアの確認フラッシュ
-  // ブザー: 実際に符号を送出している(電鍵を押している)間だけ鳴らす = サイドトーン
-  setLed(keyBtn.pressed || (now < ledFlashUntil));
-  setBuzzer(keyBtn.pressed);
+  // --- BOT 送出中は BOT が LED/ブザーを駆動。電鍵入力は無視 ---
+  if (qso == QSO_BOT_SENDING) {
+    tickBot(now);
+  } else {
+    setLed(keyBtn.pressed || (now < ledFlashUntil));
+    setBuzzer(keyBtn.pressed);
+  }
 
   // --- 表示更新(変化があった時だけ → I2C 負荷とチラつきを抑える) ---
   if (dirty) {
