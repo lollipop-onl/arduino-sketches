@@ -3,7 +3,7 @@
   "author": "arduino-sketches",
   "editor": "wokwi",
   "parts": [
-    { "type": "board-uno-r4-wifi", "id": "uno", "top": 250, "left": -10, "attrs": {} },
+    { "type": "wokwi-arduino-uno", "id": "uno", "top": 250, "left": -10, "attrs": {} },
     { "type": "wokwi-breadboard", "id": "bb", "top": 0, "left": 0, "attrs": {} },
     { "type": "wokwi-lcd1602", "id": "lcd", "top": -215, "left": 80, "attrs": { "pins": "i2c" } },
     { "type": "wokwi-resistor", "id": "rSda", "top": -40, "left": 115, "rotate": 90, "attrs": { "value": "4700" } },
