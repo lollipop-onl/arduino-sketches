@@ -3,32 +3,51 @@
   "author": "arduino-sketches",
   "editor": "wokwi",
   "parts": [
-    { "type": "board-uno-r4-wifi", "id": "uno", "top": 0, "left": 0, "attrs": {} },
-    { "type": "wokwi-lcd1602", "id": "lcd", "top": -170, "left": 50, "attrs": { "pins": "i2c" } },
-    { "type": "wokwi-pushbutton", "id": "btnKey", "top": 230, "left": -20, "attrs": { "color": "green", "label": "KEY (D2)" } },
-    { "type": "wokwi-pushbutton", "id": "btnClear", "top": 230, "left": 160, "attrs": { "color": "red", "label": "CLR (D3)" } },
-    { "type": "wokwi-resistor", "id": "r1", "top": 110, "left": 300, "attrs": { "value": "220" } },
-    { "type": "wokwi-led", "id": "led", "top": 110, "left": 380, "attrs": { "color": "yellow", "label": "D4" } },
-    { "type": "wokwi-buzzer", "id": "bz", "top": 230, "left": 360, "attrs": { "volume": "0.1" } }
+    { "type": "board-uno-r4-wifi", "id": "uno", "top": 250, "left": -10, "attrs": {} },
+    { "type": "wokwi-breadboard", "id": "bb", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-lcd1602", "id": "lcd", "top": -215, "left": 80, "attrs": { "pins": "i2c" } },
+    { "type": "wokwi-resistor", "id": "rSda", "top": -40, "left": 115, "rotate": 90, "attrs": { "value": "4700" } },
+    { "type": "wokwi-resistor", "id": "rScl", "top": -40, "left": 145, "rotate": 90, "attrs": { "value": "4700" } },
+    { "type": "wokwi-pushbutton", "id": "btnKey", "top": -55, "left": 190, "attrs": { "color": "green", "label": "KEY (D2)" } },
+    { "type": "wokwi-pushbutton", "id": "btnClear", "top": -55, "left": 280, "attrs": { "color": "red", "label": "CLR (D3)" } },
+    { "type": "wokwi-resistor", "id": "r1", "top": -40, "left": 370, "rotate": 90, "attrs": { "value": "220" } },
+    { "type": "wokwi-led", "id": "led", "top": -75, "left": 410, "attrs": { "color": "yellow", "label": "D4" } },
+    { "type": "wokwi-buzzer", "id": "bz", "top": -85, "left": 470, "attrs": { "volume": "0.1" } }
   ],
   "connections": [
-    [ "uno:A4", "lcd:SDA", "green", [] ],
-    [ "uno:A5", "lcd:SCL", "gold", [] ],
-    [ "uno:5V", "lcd:VCC", "red", [] ],
-    [ "uno:GND.1", "lcd:GND", "black", [] ],
+    [ "uno:5V", "bb:bp.1", "red", [] ],
+    [ "uno:GND.1", "bb:bn.1", "black", [] ],
 
-    [ "uno:2", "btnKey:1.l", "blue", [] ],
-    [ "btnKey:2.l", "uno:GND.2", "black", [] ],
+    [ "lcd:VCC", "bb:bp.3", "red", [] ],
+    [ "lcd:GND", "bb:bn.3", "black", [] ],
 
-    [ "uno:3", "btnClear:1.l", "violet", [] ],
-    [ "btnClear:2.l", "uno:GND.2", "black", [] ],
+    [ "uno:A4", "bb:8t.a", "green", [] ],
+    [ "lcd:SDA", "bb:8t.b", "green", [] ],
+    [ "rSda:1", "bb:8t.c", "green", [] ],
+    [ "rSda:2", "bb:bp.8", "red", [] ],
 
-    [ "uno:4", "r1:1", "orange", [] ],
-    [ "r1:2", "led:A", "orange", [] ],
-    [ "led:C", "uno:GND.3", "black", [] ],
+    [ "uno:A5", "bb:10t.a", "gold", [] ],
+    [ "lcd:SCL", "bb:10t.b", "gold", [] ],
+    [ "rScl:1", "bb:10t.c", "gold", [] ],
+    [ "rScl:2", "bb:bp.10", "red", [] ],
 
-    [ "uno:5", "bz:1", "limegreen", [] ],
-    [ "bz:2", "uno:GND.3", "black", [] ]
+    [ "uno:2", "bb:14t.a", "blue", [] ],
+    [ "btnKey:1.l", "bb:14t.b", "blue", [] ],
+    [ "btnKey:2.l", "bb:bn.14", "black", [] ],
+
+    [ "uno:3", "bb:18t.a", "violet", [] ],
+    [ "btnClear:1.l", "bb:18t.b", "violet", [] ],
+    [ "btnClear:2.l", "bb:bn.18", "black", [] ],
+
+    [ "uno:4", "bb:22t.a", "orange", [] ],
+    [ "r1:1", "bb:22t.b", "orange", [] ],
+    [ "r1:2", "bb:24t.a", "orange", [] ],
+    [ "led:A", "bb:24t.b", "orange", [] ],
+    [ "led:C", "bb:bn.24", "black", [] ],
+
+    [ "uno:5", "bb:28t.a", "limegreen", [] ],
+    [ "bz:2", "bb:28t.b", "limegreen", [] ],
+    [ "bz:1", "bb:bn.28", "black", [] ]
   ],
   "dependencies": {}
 }

@@ -14,16 +14,18 @@
 //   2行目: ">" + 入力中の符号(・-) + 右端にその符号の解読プレビュー1字
 //          例 "  >.-          A"  (".-" は今のところ A、と即時フィードバック)
 //
-// 配線:
-//   [ボタン]  電鍵:   片足 -> D2 / もう片足 -> GND  (INPUT_PULLUP)
-//             クリア: 片足 -> D3 / もう片足 -> GND  (INPUT_PULLUP)
-//   [LED]     D4 -> [220〜330Ω] -> LED アノード, LED カソード -> GND
+// 配線 (ブレッドボードで組む。Wokwi 図 diagram.json と同一):
+//   ブレッドボードの電源レールを 5V(+)/GND(-) として使い、各部品はそこへ落とす。
+//     [電源]    UNO 5V -> (+)レール / UNO GND -> (-)レール
+//   [ボタン]  電鍵:   片足 -> D2 / もう片足 -> (-)レール  (INPUT_PULLUP)
+//             クリア: 片足 -> D3 / もう片足 -> (-)レール  (INPUT_PULLUP)
+//   [LED]     D4 -> [220Ω] -> LED アノード, LED カソード -> (-)レール
 //             (打鍵に同期して点灯。基板上の LED_BUILTIN も同時に光る)
-//   [ブザー]  パッシブ(圧電)ブザー: + -> D5 / - -> GND
+//   [ブザー]  パッシブ(圧電)ブザー: + -> D5 / - -> (-)レール
 //             (打鍵中=ドット/ダッシュ送出中だけ鳴る = サイドトーン。tone() 使用)
-//   [LCD I2C] GND->GND / VCC->5V / SDA->A4 / SCL->A5
-//     ※ UNO R4 は I2C 外部 pull-up 抵抗が必須 (SDA->5V, SCL->5V, 4.7k〜10k)。
-//        無いと LCD が無反応になる(CLAUDE.md / i2c_scan 参照)。
+//   [LCD I2C] GND->(-)レール / VCC->(+)レール / SDA->A4 / SCL->A5
+//     ※ UNO R4 は I2C 外部 pull-up 抵抗が必須。SDA と SCL を各 4.7kΩ で (+)レール
+//        (=5V) へ吊る。無いと LCD が無反応になる(CLAUDE.md / i2c_scan 参照)。
 //
 // 制約: HD44780 はアルファベット/数字向け。日本語は表示できない。
 #include <string.h>
@@ -34,7 +36,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);  // (address, cols, rows)
 
 const uint8_t PIN_KEY = 2;    // 電鍵ボタン -> GND
 const uint8_t PIN_CLEAR = 3;  // クリアボタン -> GND
-const uint8_t PIN_LED = 4;    // 外部 LED (+抵抗) -> GND
+const uint8_t PIN_LED_EXT = 4; // 外部 LED (+抵抗) -> GND ※PIN_LED は core 予約マクロ(=13)
 const uint8_t PIN_BUZZER = 5; // パッシブ(圧電)ブザー + -> GND
 
 // --- タイミング定数 [ms] (打ちやすさに合わせて調整する) ---
@@ -102,7 +104,7 @@ int updateButton(Button& b) {
 }
 
 void setLed(bool on) {
-  digitalWrite(PIN_LED, on ? HIGH : LOW);
+  digitalWrite(PIN_LED_EXT, on ? HIGH : LOW);
   digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
 }
 
@@ -166,7 +168,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(PIN_KEY, INPUT_PULLUP);
   pinMode(PIN_CLEAR, INPUT_PULLUP);
-  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_LED_EXT, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   setLed(false);
