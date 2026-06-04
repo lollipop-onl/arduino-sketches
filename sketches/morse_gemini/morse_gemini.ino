@@ -92,6 +92,7 @@ const unsigned long DASH_MS       = 250;   // これ以上の押下は「-」
 const unsigned long LETTER_GAP_MS = 700;   // この無音で1文字確定
 const unsigned long WORD_GAP_MS   = 3000;  // この無音で単語区切り(初心者向けに長め)
 const unsigned long LED_FLASH_MS  = 80;    // 確定/クリア確認フラッシュ
+const unsigned long LONG_CLEAR_MS = 800;   // クリアボタン長押し=全削除の閾値
 const unsigned int  BUZZER_HZ     = 800;   // サイドトーン周波数 [Hz]
 const unsigned long UNIT_MS       = 120;   // BOT モールス送出の1単位長
 
@@ -167,6 +168,8 @@ char respBuf[RESP_BUF_MAX];     // HTTP レスポンスボディ
 
 unsigned long pressStart   = 0;
 unsigned long releaseTime  = 0;
+unsigned long clearPressStart = 0;  // クリアボタンを押し始めた時刻
+bool clearLongDone = false;         // 長押し全削除を発火済みか(離す時の1字削除を抑止)
 unsigned long ledFlashUntil = 0;
 bool spaceAdded = true;
 bool dirty = true;
@@ -803,6 +806,17 @@ void handleProsign(Prosign p) {
 // リセット
 // ============================================================
 
+// 1字削除(短押し): 入力中の符号があればまずそれを消し、無ければ確定済み末尾1字。
+void backspaceChar() {
+  if (symLen > 0) {
+    symLen = 0;
+    symbol[0] = '\0';
+  } else if (msgLen > 0) {
+    msgLen--;
+    message[msgLen] = '\0';
+  }
+}
+
 void resetMessage() {
   msgLen = 0;
   message[0] = '\0';
@@ -864,11 +878,27 @@ void loop() {
   // WiFi 接続状態を維持(切断時は再接続を試みる)
   ensureWifi();
 
-  // --- クリアボタン: 全消去 + BOT 中断 ---
-  if (updateButton(clearBtn) == 1) {
+  // --- クリアボタン: 短押し=1字削除 / 長押し(>=LONG_CLEAR_MS)=全消去+BOT中断 ---
+  int ce = updateButton(clearBtn);
+  if (ce == 1) {          // 押し始め
+    clearPressStart = now;
+    clearLongDone = false;
+  } else if (ce == -1) {  // 離した
+    if (!clearLongDone) { // 長押し未発火 → 短押し扱いで1字削除
+      backspaceChar();
+      ledFlashUntil = now + LED_FLASH_MS;
+      Serial.println("[backspace]");
+      dirty = true;
+    }
+    clearLongDone = false;
+  }
+  // 押しっぱなしで閾値超え → 全消去(1回だけ)
+  if (clearBtn.pressed && !clearLongDone &&
+      (now - clearPressStart) >= LONG_CLEAR_MS) {
     resetMessage();
+    clearLongDone = true;
     ledFlashUntil = now + LED_FLASH_MS;
-    Serial.println("[clear]");
+    Serial.println("[clear all]");
     dirty = true;
   }
 
