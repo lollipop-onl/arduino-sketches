@@ -208,6 +208,7 @@ void resetMessage() {
   symbol[0] = '\0';
   spaceAdded = true;   // 先頭に空白を入れない
   qso = QSO_IDLE;      // 状態を待機へ
+  botOn = false;       // BOT 送出の ON 状態も解除(防御)
   setBuzzer(false);    // BOT 送出中の鳴動を止める
   setLed(false);
 }
@@ -278,21 +279,30 @@ void tickBot(unsigned long now) {
 
   // OFF フェーズ明け: 次のシンボル/文字/語へ
   if (botCode[botMarkIdx] == '\0') {
-    // 現文字を打ち終えた → 次の文字へ(文字間ギャップ込み)
+    // 現文字を打ち終えた → 次の文字へ(直前に要素間 1u が経過済み)
     botCharIdx++;
     if (botText[botCharIdx] == '\0') {  // 全文字送出完了
       setState(QSO_IDLE);
       dirty = true;
       return;
     }
-    botMarkIdx = 0;
     if (botText[botCharIdx] == ' ') {
-      botCode = "";
-      botPhaseUntil = now + UNIT_MS * 7;  // 語間
+      // 空白を飛び越え次の実文字へ。語間は直前 1u と合わせ計 7u。
+      botCharIdx++;
+      if (botText[botCharIdx] == '\0') {  // 末尾が空白
+        setState(QSO_IDLE);
+        dirty = true;
+        return;
+      }
+      botMarkIdx = 0;
+      botCode = encode(botText[botCharIdx]);
+      botPhaseUntil = now + UNIT_MS * 6;  // 語間(直前の要素間 1u + 6 = 計 7u)
+      dirty = true;
       return;
     }
+    botMarkIdx = 0;
     botCode = encode(botText[botCharIdx]);
-    botPhaseUntil = now + UNIT_MS * 3;  // 文字間(直前の要素間1+追加で計3相当)
+    botPhaseUntil = now + UNIT_MS * 2;  // 文字間(直前の要素間 1u + 2 = 計 3u)
     dirty = true;  // 表示の文字数更新
     return;
   }
