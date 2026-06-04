@@ -205,19 +205,32 @@ void resetMessage() {
 void render() {
   char line[17];
 
-  // 1行目: 解読テキストの末尾16字
-  int start = (msgLen > 16) ? (msgLen - 16) : 0;
-  snprintf(line, sizeof(line), "%-16s", message + start);
+  // 1行目: "ME:" + 解読テキストの末尾(13字)
+  int avail = 13;
+  int start = (msgLen > avail) ? (msgLen - avail) : 0;
+  snprintf(line, sizeof(line), "ME:%-13s", message + start);
   lcd.setCursor(0, 0);
   lcd.print(line);
 
-  // 2行目: ">" + 入力中の符号 + 右端に解読プレビュー
-  char preview = ' ';
-  if (symLen > 0) {
-    char c = decode(symbol);
-    preview = c ? c : '?';
+  // 2行目: 状態で切替
+  if (qso == QSO_BOT_SENDING) {
+    // "BOT:" + 送出済み文字まで(打つに連れ伸びる)
+    int shown = botCharIdx + 1;  // 現在送出中の文字まで見せる
+    char buf[13];
+    int n = 0;
+    for (int i = 0; i < shown && botText[i] != '\0' && n < 12; i++) buf[n++] = botText[i];
+    buf[n] = '\0';
+    snprintf(line, sizeof(line), "BOT:%-12s", buf);
+  } else {
+    // 入力中符号 + 右端プレビュー(従来)
+    char preview = ' ';
+    if (symLen > 0) {
+      Prosign pro = matchProsign(symbol);
+      if (pro != PRO_NONE) preview = '*';  // prosign 候補は '*'
+      else { char c = decode(symbol); preview = c ? c : '?'; }
+    }
+    snprintf(line, sizeof(line), ">%-13s %c", symbol, preview);
   }
-  snprintf(line, sizeof(line), ">%-13s %c", symbol, preview);
   lcd.setCursor(0, 1);
   lcd.print(line);
 }
