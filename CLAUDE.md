@@ -57,7 +57,7 @@ Arduino **UNO R4 WiFi** 専用のスケッチ集。arduino-cli + mise で操作�
 - `backlog_projects` — Backlog `projects` 一覧を取得し、ボタン(D2→GND)押下ごとに `name (KEY)` を横スクロール表示で巡回。同上 env + lib。
 - `joystick_serial` — KY-023 ジョイスティックの X/Y/ボタンを `x,y,sw` CSV でシリアル送出(115200)。配線 VRx→A0/VRy→A1/SW→D2。`docs/` の Web Serial ページから読む。
 - `joystick_lcd` — 上記 KY-023 を I2C 1602 LCD(0x27)に表示(1行目 `X/Y` 生値、2行目 `BTN`/方向)。Serial CSV も併出。lib: `LiquidCrystal_I2C`。I2C 外部 pull-up 必須。
-- `morse_keyer` — ボタン(D2)を電鍵として叩いたモールス信号を A-Z/0-9 に解読し I2C 1602 LCD に表示(複数ワード可)。短押し=`・`/長押し=`-`、無音長で文字・単語を確定。D3 で表示クリア(本体 RESET でも可)、LED(D4)とパッシブブザー(D5)が打鍵に同期(サイドトーン)。lib: `LiquidCrystal_I2C`。I2C 外部 pull-up 必須。さらに prosign(手順信号)を打つと相手局 BOT が半二重で応答する交信ごっこ機能あり: `KA`=交信開始→`QRV` / `AR`=通信文終わり→`R` / `SK`=交信終了→`73` / `BT`=区切り / 語境界の単独 `K`=どうぞ→直前メッセージをエコー。BOT 応答は LED+ブザーでモールス送出(ノンブロッキング)、LCD は `ME:`/`BOT:` の会話ログ型。
+- `morse_keyer` — ボタン(D2)を電鍵として叩いたモールス信号を A-Z/0-9 に解読し I2C 1602 LCD に表示(複数ワード可)。短押し=`・`/長押し=`-`、無音長で文字・単語を確定。D3 で表示クリア(本体 RESET でも可)、LED(D4)とパッシブブザー(D5)が打鍵に同期(サイドトーン)。lib: `LiquidCrystal_I2C`。I2C 外部 pull-up 必須。さらに prosign(手順信号)を打つと相手局 BOT が半二重で応答する交信ごっこ機能あり: `KA`=交信開始→`QRV` / `AR`=通信文終わり→`R` / `SK`=交信終了→`73` / `BT`=区切り / 語境界の単独 `K`=どうぞ→直前メッセージをエコー。BOT 応答は LED+ブザーでモールス送出(ノンブロッキング)、LCD は `ME:`/`BOT:` の会話ログ型。LED は送信元で色分け: 自分の打鍵=D4(黄)、BOT 応答=D6(青)。
 
 ## docs/ (GitHub Pages)
 - `docs/` を GH Pages root に公開。Web Serial API で USB シリアルを直読みする静的ページ。

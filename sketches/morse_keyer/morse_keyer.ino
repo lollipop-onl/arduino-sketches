@@ -27,8 +27,10 @@
 //     [電源]    UNO 5V -> (+)レール / UNO GND -> (-)レール
 //   [ボタン]  電鍵:   片足 -> D2 / もう片足 -> (-)レール  (INPUT_PULLUP)
 //             クリア: 片足 -> D3 / もう片足 -> (-)レール  (INPUT_PULLUP)
-//   [LED]     D4 -> [220Ω] -> LED アノード, LED カソード -> (-)レール
-//             (打鍵に同期して点灯。基板上の LED_BUILTIN も同時に光る)
+//   [LED]     自分(打鍵): D4 -> [220Ω] -> LED(黄)アノード, カソード -> (-)レール
+//             (自分の打鍵に同期して点灯。基板上の LED_BUILTIN も同時に光る)
+//   [LED]     相手(BOT) : D6 -> [220Ω] -> LED(青)アノード, カソード -> (-)レール
+//             (BOT 応答のモールス送出に同期して点灯。送信元を色で区別)
 //   [ブザー]  パッシブ(圧電)ブザー: + -> D5 / - -> (-)レール
 //             (打鍵中=ドット/ダッシュ送出中だけ鳴る = サイドトーン。tone() 使用)
 //   [LCD I2C] GND->(-)レール / VCC->(+)レール / SDA->A4 / SCL->A5
@@ -46,6 +48,7 @@ const uint8_t PIN_KEY = 2;    // 電鍵ボタン -> GND
 const uint8_t PIN_CLEAR = 3;  // クリアボタン -> GND
 const uint8_t PIN_LED_EXT = 4; // 外部 LED (+抵抗) -> GND ※PIN_LED は core 予約マクロ(=13)
 const uint8_t PIN_BUZZER = 5; // パッシブ(圧電)ブザー + -> GND
+const uint8_t PIN_LED_BOT = 6; // BOT 応答専用 LED (+抵抗) -> GND
 
 // --- タイミング定数 [ms] (打ちやすさに合わせて調整する) ---
 const unsigned long DEBOUNCE_MS = 20;      // チャタリング除去
@@ -165,6 +168,11 @@ void setLed(bool on) {
   digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
 }
 
+// BOT 応答専用 LED(相手局の送出に同期)。自分の打鍵 LED(D4)とは別ピン。
+void setBotLed(bool on) {
+  digitalWrite(PIN_LED_BOT, on ? HIGH : LOW);
+}
+
 // 電鍵を押している間だけブザーを鳴らす(状態が変わった時だけ tone/noTone)。
 void setBuzzer(bool on) {
   static bool cur = false;
@@ -211,6 +219,7 @@ void resetMessage() {
   botOn = false;       // BOT 送出の ON 状態も解除(防御)
   setBuzzer(false);    // BOT 送出中の鳴動を止める
   setLed(false);
+  setBotLed(false);    // BOT 応答 LED も消灯
 }
 
 // 2行を毎回フル幅(16字)で上書き → clear() 不要でチラつかない。
@@ -271,7 +280,7 @@ void tickBot(unsigned long now) {
     // ON 終了 → 要素間ギャップ(1単位)へ
     botOn = false;
     setBuzzer(false);
-    setLed(false);
+    setBotLed(false);
     botMarkIdx++;
     botPhaseUntil = now + UNIT_MS;  // 要素間
     return;
@@ -311,7 +320,7 @@ void tickBot(unsigned long now) {
   char mark = botCode[botMarkIdx];
   botOn = true;
   setBuzzer(true);
-  setLed(true);
+  setBotLed(true);
   botPhaseUntil = now + ((mark == '-') ? UNIT_MS * 3 : UNIT_MS);
 }
 
@@ -348,9 +357,11 @@ void setup() {
   pinMode(PIN_KEY, INPUT_PULLUP);
   pinMode(PIN_CLEAR, INPUT_PULLUP);
   pinMode(PIN_LED_EXT, OUTPUT);
+  pinMode(PIN_LED_BOT, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   setLed(false);
+  setBotLed(false);
   noTone(PIN_BUZZER);
 
   lcd.init();

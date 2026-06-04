@@ -11,8 +11,10 @@
     { "type": "wokwi-pushbutton", "id": "btnKey", "top": -55, "left": 190, "attrs": { "color": "green", "label": "KEY (D2)" } },
     { "type": "wokwi-pushbutton", "id": "btnClear", "top": -55, "left": 280, "attrs": { "color": "red", "label": "CLR (D3)" } },
     { "type": "wokwi-resistor", "id": "r1", "top": -40, "left": 370, "rotate": 90, "attrs": { "value": "220" } },
-    { "type": "wokwi-led", "id": "led", "top": -75, "left": 410, "attrs": { "color": "yellow", "label": "D4" } },
-    { "type": "wokwi-buzzer", "id": "bz", "top": -85, "left": 470, "attrs": { "volume": "0.1" } }
+    { "type": "wokwi-led", "id": "led", "top": -75, "left": 410, "attrs": { "color": "yellow", "label": "D4 ME" } },
+    { "type": "wokwi-buzzer", "id": "bz", "top": -85, "left": 470, "attrs": { "volume": "0.1" } },
+    { "type": "wokwi-resistor", "id": "r2", "top": -40, "left": 535, "rotate": 90, "attrs": { "value": "220" } },
+    { "type": "wokwi-led", "id": "ledBot", "top": -75, "left": 575, "attrs": { "color": "blue", "label": "D6 BOT" } }
   ],
   "connections": [
     [ "uno:5V", "bb:bp.1", "red", [] ],
@@ -47,7 +49,13 @@
 
     [ "uno:5", "bb:28t.a", "limegreen", [] ],
     [ "bz:2", "bb:28t.b", "limegreen", [] ],
-    [ "bz:1", "bb:bn.28", "black", [] ]
+    [ "bz:1", "bb:bn.28", "black", [] ],
+
+    [ "uno:6", "bb:30t.a", "cyan", [] ],
+    [ "r2:1", "bb:30t.b", "cyan", [] ],
+    [ "r2:2", "bb:32t.a", "cyan", [] ],
+    [ "ledBot:A", "bb:32t.b", "cyan", [] ],
+    [ "ledBot:C", "bb:bn.32", "black", [] ]
   ],
   "dependencies": {}
 }
