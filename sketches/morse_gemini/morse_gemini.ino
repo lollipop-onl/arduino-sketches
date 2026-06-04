@@ -1,32 +1,38 @@
-// モールス AI 交信機: 電鍵(D2)で打ったモールスをリアルタイム解読し、
-// prosign でハンドオーバーすると解読テキストを Google Gemini API に送信。
-// Gemini の返信をモールス(D6 LED + D5 ブザー)で打ち返す本格的な AI QSO 装置。
+// モールス AI 交信機 (morse_gemini): 電鍵(D2)で打ったモールスをリアルタイム解読し、
+// prosign でハンドオーバーすると会話履歴を Google Gemini API に送信、AI の返信を
+// モールス(D6 LED + D5 ブザー)で打ち返す CW QSO 装置。
+//
+// === 設計方針 (production 指向) ===
+//  ・HTTPS 呼び出しは状態機械(QSO_API_WAIT + ApiPhase)で分割し、レスポンス待ち/読み取りを
+//    ノンブロッキング化。呼び出し中も clearBtn / BOT 送出 tick / LCD 描画が応答する。
+//    (TLS ハンドシェイクのみ WiFiS3 に非同期 API が無く ~1-3s 短くブロックする)
+//  ・会話履歴は role/text の構造体リング(Turn[])で保持し、ArduinoJson で多ターンの
+//    contents[] を組み立てる。JSON エスケープも ArduinoJson に委譲(手書き escape を排除)。
+//  ・入力検証: HTTP ステータス / finishReason(SAFETY 等) / promptFeedback.blockReason を判定し、
+//    使えない応答は CW の略語(QRX=待機 / AGN=再送)にデグレードする。
+//  ・診断ログは LOG_LEVEL で詳細度を制御。API キーは決してログ・LCD に出さない。
 //
 // 打ち方 (ストレートキー方式):
-//   ・短く押す          -> 「・」(dot)        … 押下時間 < DASH_MS
-//   ・長く押す          -> 「-」(dash)        … 押下時間 >= DASH_MS
-//   ・少し止める        -> 1文字確定          … 無音 >= LETTER_GAP_MS
-//   ・長めに止める      -> 単語の区切り(空白) … 無音 >= WORD_GAP_MS
+//   ・短く押す      -> 「・」(dot)        … 押下時間 < DASH_MS
+//   ・長く押す      -> 「-」(dash)        … 押下時間 >= DASH_MS
+//   ・少し止める    -> 1文字確定          … 無音 >= LETTER_GAP_MS
+//   ・長めに止める  -> 単語の区切り(空白) … 無音 >= WORD_GAP_MS
 //
 // prosign(手順信号) -> Gemini トリガー対応表:
-//   KA (-.-.-)  交信開始: 直近メッセージ(または「START QSO」)を送信 -> Gemini が開局挨拶
-//   AR (.-.-.）通信文終わり: 直近メッセージを送信 -> Gemini が了解応答
-//   K  (-.-)   どうぞ(語境界のみ): 直近メッセージを送信 -> Gemini が返答
-//   SK (...-.- ) 交信終了: 直近メッセージ + 「END QSO」を送信 -> Gemini が 73 で締め
-//   BT (-...-) 区切り: メッセージに空白を追加するだけ(Gemini 呼び出しなし)
+//   KA (-.-.-)  交信開始: メッセージ(無ければ "CQ DE ME")+ "START QSO" を送信
+//   AR (.-.-.)  通信文終わり: メッセージを送信 -> Gemini が了解応答
+//   K  (-.-)    どうぞ(語境界のみ): メッセージを送信 -> Gemini が返答
+//   SK (...-.-) 交信終了: メッセージ + "END QSO" を送信 -> Gemini が 73 で締め
+//   BT (-...-)  区切り: メッセージに空白を追加するだけ(Gemini 呼び出しなし)
 //
-// HTTPS 呼び出し中は LCD に "TX..." を表示して電鍵入力を無視(半二重)。
-// Gemini 返信は D6(青) LED + D5 ブザーで非同期ノンブロッキング送出。
-// D3 クリアボタン: メッセージ・トランスクリプトをリセット、BOT 送出を中断。
-//
-// WiFi 接続失敗時はローカル打鍵モードで動作継続。Gemini 呼び出しエラー時は
-// BOT が "?" または "QRX" を送信してデグレードする。
+// クリアボタン(D3): 短押し=1字削除 / 長押し(>=LONG_CLEAR_MS)=全消去 + API/BOT 中断。
 //
 // LCD 表示 (会話ログ型):
-//   1行目: "ME:" + 解読テキストの末尾(13字)
-//   2行目: 待機/入力中 = ">" + 入力中の符号(・-) + 右端に解読プレビュー1字
-//          (prosign 候補は '*')。BOT 応答中 = "BOT:" + 送出中テキスト
-//          Gemini 呼び出し中 = "TX..." (ブロッキング期間)
+//   1行目: "ME:" + 解読テキストの末尾(13字)。末尾に点滅カーソル(文字確定で右へ→区切れ可視化)。
+//   2行目: 入力中 = ">" + 入力中の符号(・-) + 右端プレビュー1字(prosign 候補は '*')
+//          受信保持 = ":" + 直前の BOT 応答(次の打鍵まで残す)
+//          API 呼び出し中 = "TX connect/wait/recv..." (フェーズ表示)
+//          BOT 応答送出中 = ":" + 送出中テキスト(末尾追従)
 //
 // 必要な env (mise.local.toml の [env]):
 //   SECRET_SSID            WiFi の SSID
@@ -34,41 +40,56 @@
 //   SECRET_GEMINI_APIKEY   Gemini API キー (Google AI Studio で発行)
 //
 // 配線 (ブレッドボードで組む。Wokwi 図 diagram.json と同一):
-//   ブレッドボードの電源レールを 5V(+)/GND(-) として使い、各部品はそこへ落とす。
 //     [電源]    UNO 5V -> (+)レール / UNO GND -> (-)レール
 //   [ボタン]  電鍵:   片足 -> D2 / もう片足 -> (-)レール  (INPUT_PULLUP)
 //             クリア: 片足 -> D3 / もう片足 -> (-)レール  (INPUT_PULLUP)
 //   [LED]     自分(打鍵): D4 -> [220Ω] -> LED(黄)アノード, カソード -> (-)レール
-//             (自分の打鍵に同期して点灯。基板上の LED_BUILTIN も同時に光る)
 //   [LED]     相手(Gemini): D6 -> [220Ω] -> LED(青)アノード, カソード -> (-)レール
-//             (Gemini 返信のモールス送出に同期して点灯。送信元を色で区別)
-//   [ブザー]  パッシブ(圧電)ブザー: + -> D5 / - -> (-)レール
-//             (打鍵中=ドット/ダッシュ送出中だけ鳴る = サイドトーン。tone() 使用)
+//   [ブザー]  パッシブ(圧電)ブザー: + -> D5 / - -> (-)レール (サイドトーン)
 //   [LCD I2C] GND->(-)レール / VCC->(+)レール / SDA->A4 / SCL->A5
-//     ※ UNO R4 は I2C 外部 pull-up 抵抗が必須。SDA と SCL を各 4.7kΩ で (+)レール
-//        (=5V) へ吊る。無いと LCD が無反応になる(CLAUDE.md / i2c_scan 参照)。
+//     ※ UNO R4 は I2C 外部 pull-up 抵抗が必須(SDA/SCL を各 4.7kΩ で +5V へ)。
 //
 // 使用ライブラリ: LiquidCrystal_I2C / ArduinoJson (v7) / WiFiS3(core同梱)
-// 制約: HD44780 はアルファベット/数字向け。日本語は表示できない。
-//       Wokwi シミュレーション環境では WiFi/Gemini 呼び出しは動作しない。
-//       ローカルの電鍵入力・LED/ブザー応答は sim でも確認できる。
+// 制約: HD44780 は英数字向け。日本語は表示できない。Wokwi sim は WiFi/Gemini 不可
+//       (ローカル打鍵・LED/ブザー応答のみ確認可)。
 #include <string.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <WiFiS3.h>
 #include <ArduinoJson.h>
+#include "types.h"  // struct/enum 定義(自動 prototype 対策で最後の #include に置く)
 #include "arduino_secrets.h"
 
-// --- WiFi / Gemini 接続定数 ---
-const char* WIFI_SSID = SECRET_SSID;
-const char* WIFI_PASS = SECRET_PASS;
-// API キーはヘッダで渡す(URL に含めない → ログ漏洩を防ぐ)。
-const char* GEMINI_HOST = "generativelanguage.googleapis.com";
-#define GEMINI_MODEL    "gemini-2.5-flash"
-#define GEMINI_PATH     "/v1beta/models/" GEMINI_MODEL ":generateContent"
+// ============================================================
+// 診断ログ (LOG_LEVEL: 0=無, 1=ERR, 2=WARN, 3=INFO, 4=DEBUG)
+//   API キーは決して出力しない。
+// ============================================================
+static const uint8_t LOG_LEVEL = 3;
+static void logAt(uint8_t lv, const char* tag, const char* msg) {
+  if (lv > LOG_LEVEL) return;
+  Serial.print(tag);
+  Serial.println(msg);
+}
+#define LOGE(m) logAt(1, "[E] ", (m))
+#define LOGW(m) logAt(2, "[W] ", (m))
+#define LOGI(m) logAt(3, "[I] ", (m))
+#define LOGD(m) logAt(4, "[D] ", (m))
 
-// Gemini へ送るシステム指示。英語の文字列リテラルとして本体に埋め込む。
-// 短い大文字英語 + ハム無線略語のみで返すよう厳命する。
+// ============================================================
+// 設定値
+// ============================================================
+// --- WiFi / Gemini エンドポイント ---
+static const char* const WIFI_SSID  = SECRET_SSID;
+static const char* const WIFI_PASS  = SECRET_PASS;
+static const char* const GEMINI_HOST = "generativelanguage.googleapis.com";
+#define GEMINI_MODEL "gemini-2.5-flash"
+#define GEMINI_PATH  "/v1beta/models/" GEMINI_MODEL ":generateContent"
+
+// --- Gemini 生成パラメータ ---
+static const float        GEMINI_TEMPERATURE = 0.8f;
+static const unsigned int GEMINI_MAX_TOKENS  = 200;  // 短文 QSO には十分(thinking は無効)
+
+// Gemini へのシステム指示(英語リテラル, 本体に埋め込む)。
 static const char SYSTEM_INSTRUCTION[] =
     "You are an amateur radio operator in a CW (Morse code) QSO. "
     "Reply ONLY in short uppercase English using standard ham-radio "
@@ -80,36 +101,43 @@ static const char SYSTEM_INSTRUCTION[] =
     "You are the far station; continue the QSO naturally.";
 
 // --- ピン定義 ---
-const uint8_t PIN_KEY      = 2;   // 電鍵ボタン -> GND (INPUT_PULLUP)
-const uint8_t PIN_CLEAR    = 3;   // クリアボタン -> GND (INPUT_PULLUP)
-const uint8_t PIN_LED_EXT  = 4;   // 自分打鍵 LED (黄, +220Ω) -> GND
-const uint8_t PIN_BUZZER   = 5;   // パッシブブザー + -> GND
-const uint8_t PIN_LED_BOT  = 6;   // Gemini 応答 LED (青, +220Ω) -> GND
+static const uint8_t PIN_KEY     = 2;  // 電鍵ボタン -> GND (INPUT_PULLUP)
+static const uint8_t PIN_CLEAR   = 3;  // クリアボタン -> GND (INPUT_PULLUP)
+static const uint8_t PIN_LED_EXT = 4;  // 自分打鍵 LED (黄, +220Ω) -> GND
+static const uint8_t PIN_BUZZER  = 5;  // パッシブブザー + -> GND
+static const uint8_t PIN_LED_BOT = 6;  // Gemini 応答 LED (青, +220Ω) -> GND
 
 // --- タイミング定数 [ms] ---
-const unsigned long DEBOUNCE_MS   = 20;
-const unsigned long DASH_MS       = 250;   // これ以上の押下は「-」
-const unsigned long LETTER_GAP_MS = 700;   // この無音で1文字確定
-const unsigned long WORD_GAP_MS   = 3000;  // この無音で単語区切り(初心者向けに長め)
-const unsigned long LED_FLASH_MS  = 80;    // 確定/クリア確認フラッシュ
-const unsigned long LONG_CLEAR_MS = 800;   // クリアボタン長押し=全削除の閾値
-const unsigned int  BUZZER_HZ     = 800;   // サイドトーン周波数 [Hz]
-const unsigned long UNIT_MS       = 120;   // BOT モールス送出の1単位長
+static const unsigned long DEBOUNCE_MS   = 20;
+static const unsigned long DASH_MS       = 250;   // これ以上の押下は「-」
+static const unsigned long LETTER_GAP_MS = 700;   // この無音で1文字確定
+static const unsigned long WORD_GAP_MS   = 3000;  // この無音で単語区切り(初心者向けに長め)
+static const unsigned long LED_FLASH_MS  = 80;    // 確定/クリア確認フラッシュ
+static const unsigned long LONG_CLEAR_MS = 800;   // クリアボタン長押し=全削除の閾値
+static const unsigned int  BUZZER_HZ     = 800;   // サイドトーン周波数 [Hz]
+static const unsigned long UNIT_MS       = 120;   // BOT モールス送出の1単位長
+
+// --- ネットワークタイムアウト [ms] ---
+static const unsigned long HTTP_STREAM_TIMEOUT_MS = 5000;   // 各ストリーム読みの内部上限
+static const unsigned long API_WAIT_TIMEOUT_MS    = 20000;  // 初バイト到着まで(推論+RTT)
+static const unsigned long API_READ_TIMEOUT_MS    = 10000;  // 初バイト後の全読み
+static const unsigned long WIFI_ASSOC_TIMEOUT_MS  = 20000;  // 起動時の関連付け
+static const unsigned long WIFI_DHCP_TIMEOUT_MS   = 15000;  // 起動時の DHCP
+static const unsigned long WIFI_RECONNECT_MS      = 15000;  // 再接続のあきらめ時間
 
 // --- バッファサイズ ---
-const int MSG_MAX       = 64;    // 解読テキスト保持上限(先頭から捨てる)
-const int SYM_MAX       = 10;    // 1符号列の最大シンボル数
-const int BOT_TEXT_MAX  = 64;    // Gemini 返信テキストの最大長
-const int TRANSCRIPT_MAX = 384;  // 送受ログの最大長(古い方から捨てる)
-const int REQ_BODY_MAX  = 1400;  // HTTP リクエストボディバッファ(eSys512+ePrompt600+雛形)
-const int RESP_BUF_MAX  = 768;   // HTTP レスポンスボディバッファ
+static const int MSG_MAX       = 64;    // 解読テキスト保持上限(先頭から捨てる)
+static const int SYM_MAX       = 10;    // 1符号列の最大シンボル数
+static const int BOT_TEXT_MAX  = 64;    // BOT 送出テキストの最大長
+static const int MAX_TURNS     = 8;     // 保持する会話ターン数(古い方から捨てる)
+// TURN_TEXT_MAX は types.h で定義(struct Turn が参照するため)。
+static const int REQ_BODY_MAX  = 2048;  // HTTP リクエストボディ(JSON)
+static const int RESP_BUF_MAX  = 2048;  // HTTP レスポンス全体(ヘッダ+ボディ)
 
-// --- モールス符号表 (A-Z, 0-9) ---
-struct MorseMap {
-  const char* code;
-  char ch;
-};
-const MorseMap MORSE[] = {
+// ============================================================
+// モールス符号表 (A-Z, 0-9)  ※ struct MorseMap は types.h
+// ============================================================
+static const MorseMap MORSE[] = {
     {".-",   'A'}, {"-...", 'B'}, {"-.-.", 'C'}, {"-..",  'D'},
     {".",    'E'}, {"..-.", 'F'}, {"--.",  'G'}, {"....", 'H'},
     {"..",   'I'}, {".---", 'J'}, {"-.-",  'K'}, {".-..", 'L'},
@@ -122,88 +150,49 @@ const MorseMap MORSE[] = {
     {"---..", '8'}, {"----.", '9'},
 };
 
-// --- デバウンス付きボタン ---
-struct Button {
-  uint8_t pin;
-  bool pressed;
-  bool lastRaw;
-  unsigned long tChange;
-};
+// 符号(・-)を1文字に解読。未定義なら 0。
+static char decode(const char* code) {
+  for (const MorseMap& m : MORSE) {
+    if (strcmp(m.code, code) == 0) return m.ch;
+  }
+  return 0;
+}
 
-// --- QSO 状態機械 ---
-enum QsoState {
-  QSO_IDLE,         // 待機中
-  QSO_ME_SENDING,   // 自局打鍵中
-  QSO_API_WAIT,     // Gemini API 呼び出し中(ブロッキング)
-  QSO_BOT_SENDING   // Gemini 返信をモールス送出中
-};
+// 1文字 -> 符号列(・-)。未定義は ""。
+static const char* encode(char c) {
+  if (c >= 'a' && c <= 'z') c -= 32;
+  for (const MorseMap& m : MORSE) {
+    if (m.ch == c) return m.code;
+  }
+  return "";
+}
 
-// --- prosign(手順信号)テーブル ---
-enum Prosign { PRO_NONE, PRO_KA, PRO_AR, PRO_K, PRO_SK, PRO_BT };
-struct ProsignMap {
-  const char* code;
-  Prosign id;
-};
-const ProsignMap PROSIGNS[] = {
+// ============================================================
+// prosign(手順信号)  ※ enum Prosign / struct ProsignMap は types.h
+// ============================================================
+static const ProsignMap PROSIGNS[] = {
     {"-.-.-",  PRO_KA},  // 交信開始
     {".-.-.",  PRO_AR},  // 通信文終わり
     {"...-.-", PRO_SK},  // 交信終了
     {"-...-",  PRO_BT},  // 区切り
-    // K(-.-)は文字 K と同符号 → 語境界でのみ PRO_K として扱う(下記参照)
+    // K(-.-)は文字 K と同符号 → 語境界でのみ PRO_K として扱う(loop 側で判定)
 };
-
-// --- ファイルスコープ状態変数 ---
-char message[MSG_MAX + 1];      // 解読済みテキスト(null 終端)
-int  msgLen = 0;
-
-char symbol[SYM_MAX + 1];       // 入力中の符号(・-)
-int  symLen = 0;
-
-// 送受ログ: "ME: .../BOT: ..." を蓄積し Gemini に文脈として渡す
-char transcript[TRANSCRIPT_MAX + 1];
-int  transcriptLen = 0;
-
-char reqBody[REQ_BODY_MAX];     // HTTP リクエストボディ(ヒープを使わない)
-char respBuf[RESP_BUF_MAX];     // HTTP レスポンスボディ
-
-unsigned long pressStart   = 0;
-unsigned long releaseTime  = 0;
-unsigned long clearPressStart = 0;  // クリアボタンを押し始めた時刻
-bool clearLongDone = false;         // 長押し全削除を発火済みか(離す時の1字削除を抑止)
-unsigned long ledFlashUntil = 0;
-bool spaceAdded = true;
-bool dirty = true;
-bool wifiOk = false;            // WiFi 接続済みフラグ
-bool wifiReconnecting = false;  // ノンブロッキング再接続の進行中フラグ
-unsigned long reconnectStart = 0;
-
-// BOT(Gemini 返信)送出状態
-char botText[BOT_TEXT_MAX + 1];
-int  botCharIdx  = 0;
-const char* botCode  = "";
-int  botMarkIdx  = 0;
-bool botOn       = false;
-unsigned long botPhaseUntil = 0;
-bool showBotReply = false;      // 受信(BOT応答)を次の打鍵開始まで2行目に残す
-
-QsoState qso = QSO_IDLE;
-
-Button keyBtn   = {PIN_KEY,   false, false, 0};
-Button clearBtn = {PIN_CLEAR, false, false, 0};
-
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-WiFiSSLClient client;
+static Prosign matchProsign(const char* sym) {
+  for (const ProsignMap& p : PROSIGNS) {
+    if (strcmp(p.code, sym) == 0) return p.id;
+  }
+  return PRO_NONE;
+}
 
 // ============================================================
-// ユーティリティ
+// デバウンス付きボタン  ※ struct Button は types.h
 // ============================================================
-
 // 1=押下エッジ, -1=離しエッジ, 0=変化なし。
-int updateButton(Button& b) {
+static int updateButton(Button& b) {
   bool raw = (digitalRead(b.pin) == LOW);  // INPUT_PULLUP: 押下=LOW
   if (raw != b.lastRaw) {
-    b.lastRaw  = raw;
-    b.tChange  = millis();
+    b.lastRaw = raw;
+    b.tChange = millis();
   }
   if ((millis() - b.tChange) > DEBOUNCE_MS && raw != b.pressed) {
     b.pressed = raw;
@@ -212,17 +201,70 @@ int updateButton(Button& b) {
   return 0;
 }
 
-void setLed(bool on) {
-  digitalWrite(PIN_LED_EXT,  on ? HIGH : LOW);
-  digitalWrite(LED_BUILTIN,  on ? HIGH : LOW);
-}
+// ============================================================
+// 状態(ファイルスコープ)  ※ enum QsoState / ApiPhase は types.h
+// ============================================================
+// 解読中テキストと入力中符号
+static char message[MSG_MAX + 1];
+static int  msgLen = 0;
+static char symbol[SYM_MAX + 1];
+static int  symLen = 0;
 
-void setBotLed(bool on) {
+// 会話履歴(role/text のリング)。Gemini の contents[] をここから組み立てる。
+// ※ struct Turn は types.h
+static Turn turns[MAX_TURNS];
+static int  turnCount = 0;
+
+// HTTP バッファ(ヒープ断片化を避けるためファイルスコープ固定確保)
+static char reqBody[REQ_BODY_MAX];
+static char respBuf[RESP_BUF_MAX];
+static int  respLen = 0;
+
+// 打鍵タイミング
+static unsigned long pressStart      = 0;
+static unsigned long releaseTime     = 0;
+static unsigned long clearPressStart = 0;
+static bool clearLongDone = false;
+static unsigned long ledFlashUntil = 0;
+static bool spaceAdded = true;
+static bool dirty = true;
+static bool showBotReply = false;  // 受信を次の打鍵開始まで2行目に残す
+
+// WiFi
+static bool wifiOk = false;
+static bool wifiReconnecting = false;
+static unsigned long reconnectStart = 0;
+
+// BOT(Gemini 返信)送出エンジン
+static char botText[BOT_TEXT_MAX + 1];
+static int  botCharIdx = 0;
+static const char* botCode = "";
+static int  botMarkIdx = 0;
+static bool botOn = false;
+static unsigned long botPhaseUntil = 0;
+
+// API 状態機械
+static QsoState qso = QSO_IDLE;
+static ApiPhase apiPhase = API_NONE;
+static unsigned long apiPhaseStart = 0;
+
+static Button keyBtn   = {PIN_KEY,   false, false, 0};
+static Button clearBtn = {PIN_CLEAR, false, false, 0};
+
+static LiquidCrystal_I2C lcd(0x27, 16, 2);
+static WiFiSSLClient client;
+
+// ============================================================
+// 出力ヘルパ
+// ============================================================
+static void setLed(bool on) {
+  digitalWrite(PIN_LED_EXT, on ? HIGH : LOW);
+  digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
+}
+static void setBotLed(bool on) {
   digitalWrite(PIN_LED_BOT, on ? HIGH : LOW);
 }
-
-// 状態が変わった時だけ tone/noTone する(余分な呼び出しを抑制)。
-void setBuzzer(bool on) {
+static void setBuzzer(bool on) {
   static bool cur = false;
   if (on == cur) return;
   cur = on;
@@ -230,60 +272,57 @@ void setBuzzer(bool on) {
   else    noTone(PIN_BUZZER);
 }
 
-// 符号(・-)を1文字に解読。未定義なら 0 を返す。
-char decode(const char* code) {
-  for (const MorseMap& m : MORSE) {
-    if (strcmp(m.code, code) == 0) return m.ch;
+static void setState(QsoState next) {
+  if (qso == next) return;
+  if (LOG_LEVEL >= 4) {
+    Serial.print("[D] state ");
+    Serial.print((int)qso);
+    Serial.print("->");
+    Serial.println((int)next);
   }
-  return 0;
+  qso = next;
+  dirty = true;
 }
 
-// 1文字 -> 符号列(・-)。未定義は "" を返す。
-const char* encode(char c) {
-  if (c >= 'a' && c <= 'z') c -= 32;
-  for (const MorseMap& m : MORSE) {
-    if (m.ch == c) return m.code;
-  }
-  return "";
-}
-
-// prosign 識別子に変換。該当なしは PRO_NONE。
-Prosign matchProsign(const char* sym) {
-  for (const ProsignMap& p : PROSIGNS) {
-    if (strcmp(p.code, sym) == 0) return p.id;
-  }
-  return PRO_NONE;
-}
-
-// 解読テキストへ1字追加(上限超過分は先頭から捨てる)。
-void appendChar(char c) {
+// ============================================================
+// テキスト編集
+// ============================================================
+static void appendChar(char c) {
   if (msgLen >= MSG_MAX) {
     memmove(message, message + 1, MSG_MAX - 1);
     msgLen = MSG_MAX - 1;
   }
   message[msgLen++] = c;
-  message[msgLen]   = '\0';
+  message[msgLen] = '\0';
 }
 
-// トランスクリプトにテキストを追記(上限超過時は先頭から捨てる)。
-void appendTranscript(const char* text) {
-  int addLen = strlen(text);
-  int needed = transcriptLen + addLen;
-  if (needed >= TRANSCRIPT_MAX) {
-    int shift = needed - TRANSCRIPT_MAX + 1;
-    if (shift > transcriptLen) shift = transcriptLen;
-    memmove(transcript, transcript + shift, transcriptLen - shift + 1);
-    transcriptLen -= shift;
+// 1字削除(短押し): 入力中の符号があればまずそれを、無ければ確定済み末尾1字。
+static void backspaceChar() {
+  if (symLen > 0) {
+    symLen = 0;
+    symbol[0] = '\0';
+  } else if (msgLen > 0) {
+    msgLen--;
+    message[msgLen] = '\0';
   }
-  strncat(transcript, text, TRANSCRIPT_MAX - transcriptLen);
-  transcriptLen = strlen(transcript);
 }
 
-// Gemini に渡す前に文字を正規化する:
-//   大文字化 / [A-Z0-9 ] 以外を除去 / 連続空白を1つに / 前後トリム / 上限切り捨て。
-void sanitizeForMorse(const char* src, char* dst, int dstMax) {
+// 会話履歴に1ターン追加(満杯なら最古を捨てる)。
+static void addTurn(bool fromMe, const char* text) {
+  if (turnCount >= MAX_TURNS) {
+    for (int i = 1; i < MAX_TURNS; i++) turns[i - 1] = turns[i];
+    turnCount = MAX_TURNS - 1;
+  }
+  turns[turnCount].fromMe = fromMe;
+  strncpy(turns[turnCount].text, text, TURN_TEXT_MAX);
+  turns[turnCount].text[TURN_TEXT_MAX] = '\0';
+  turnCount++;
+}
+
+// Gemini に渡す前の正規化: 大文字化 / [A-Z0-9 ] 以外を除去 / 連続空白を1つに / 前後トリム。
+static void sanitizeForMorse(const char* src, char* dst, int dstMax) {
   int di = 0;
-  bool lastSpace = true;  // 先頭空白を抑制するため true スタート
+  bool lastSpace = true;  // 先頭空白抑制
   for (int i = 0; src[i] != '\0' && di < dstMax - 1; i++) {
     char c = src[i];
     if (c >= 'a' && c <= 'z') c -= 32;
@@ -295,35 +334,18 @@ void sanitizeForMorse(const char* src, char* dst, int dstMax) {
       lastSpace = true;
     }
   }
-  // 末尾の空白を除く
   while (di > 0 && dst[di - 1] == ' ') di--;
   dst[di] = '\0';
 }
 
 // ============================================================
-// 状態遷移
-// ============================================================
-
-void setState(QsoState next) {
-  if (qso == next) return;
-  Serial.print("state ");
-  Serial.print((int)qso);
-  Serial.print("->");
-  Serial.println((int)next);
-  qso   = next;
-  dirty = true;
-}
-
-// ============================================================
 // LCD 描画
 // ============================================================
-
-// 2行をフル幅(16字)で上書き → clear() 不要でチラつかない。
-void render() {
+static void render() {
   char line[17];
 
   // 1行目: "ME:" + 解読テキストの末尾(13字)
-  int avail = 13;
+  const int avail = 13;
   int start = (msgLen > avail) ? (msgLen - avail) : 0;
   snprintf(line, sizeof(line), "ME:%-13s", message + start);
   lcd.setCursor(0, 0);
@@ -331,25 +353,29 @@ void render() {
 
   // 2行目: 状態で切替
   if (qso == QSO_API_WAIT) {
-    snprintf(line, sizeof(line), "%-16s", "TX...");
+    const char* w = "TX...";
+    switch (apiPhase) {
+      case API_CONNECT: w = "TX connect...";  break;
+      case API_WAIT:    w = "TX wait...";     break;
+      case API_READ:    w = "TX recv...";     break;
+      default:          w = "TX...";          break;
+    }
+    snprintf(line, sizeof(line), "%-16s", w);
   } else if (qso == QSO_BOT_SENDING) {
-    // ":" = 応答(">" の入力中と見分く)。送出済みの末尾15字を追従表示。
+    // ":" = 応答。送出済みの末尾15字を追従表示。
     int shown = botCharIdx + 1;
-    int start = (shown > 15) ? (shown - 15) : 0;
+    int s = (shown > 15) ? (shown - 15) : 0;
     char buf[16];
     int n = 0;
-    for (int i = start; i < shown && botText[i] != '\0' && n < 15; i++) {
-      buf[n++] = botText[i];
-    }
+    for (int i = s; i < shown && botText[i] != '\0' && n < 15; i++) buf[n++] = botText[i];
     buf[n] = '\0';
     snprintf(line, sizeof(line), ":%-15s", buf);
   } else if (showBotReply && symLen == 0) {
-    // 直前の受信(BOT応答)を打鍵開始まで残す(末尾15字追従)。
+    // 直前の受信を打鍵開始まで残す(末尾15字追従)。
     int len = strlen(botText);
     int rstart = (len > 15) ? (len - 15) : 0;
     snprintf(line, sizeof(line), ":%-15s", botText + rstart);
   } else {
-    // 入力中符号 + 右端プレビュー(従来)
     char preview = ' ';
     if (symLen > 0) {
       Prosign pro = matchProsign(symbol);
@@ -361,10 +387,9 @@ void render() {
   lcd.setCursor(0, 1);
   lcd.print(line);
 
-  // カーソルは ME: 行(1行目)の次に文字が入る位置で点滅。文字が確定するたび
-  // 右へ動く → 符号が区切れて1字確定したことが見て分かる。受信表示中は出さない。
+  // カーソル: ME: 行の次に文字が入る位置で点滅。文字確定で右へ動き区切れが分かる。
   if (qso != QSO_API_WAIT && qso != QSO_BOT_SENDING && !showBotReply) {
-    int col = 3 + (msgLen > 13 ? 13 : msgLen);  // "ME:" の3字 + 末尾13字表示の右端
+    int col = 3 + (msgLen > 13 ? 13 : msgLen);
     if (col > 15) col = 15;
     lcd.setCursor(col, 0);
     lcd.blink();
@@ -376,28 +401,24 @@ void render() {
 // ============================================================
 // BOT(Gemini 返信)送出エンジン(ノンブロッキング)
 // ============================================================
-
-void botStart(const char* text) {
+static void botStart(const char* text) {
   showBotReply = false;  // 新応答の送出開始 → 前回の受信保持を解除
   strncpy(botText, text, sizeof(botText) - 1);
   botText[sizeof(botText) - 1] = '\0';
-  botCharIdx    = 0;
-  botMarkIdx    = 0;
-  botOn         = false;
+  botCharIdx = 0;
+  botMarkIdx = 0;
+  botOn = false;
   botPhaseUntil = 0;
-  botCode       = encode(botText[0]);
-  Serial.print("bot-send ");
-  Serial.println(botText);
+  botCode = encode(botText[0]);
+  LOGI(botText);
   setState(QSO_BOT_SENDING);
 }
 
-// loop() から毎回呼ぶ。送出完了で IDLE へ戻す。
-void tickBot(unsigned long now) {
+static void tickBot(unsigned long now) {
   if (qso != QSO_BOT_SENDING) return;
   if (now < botPhaseUntil) return;
 
-  if (botOn) {
-    // ON 終了 → 要素間ギャップ(1単位)へ
+  if (botOn) {  // ON 終了 → 要素間ギャップ(1単位)
     botOn = false;
     setBuzzer(false);
     setBotLed(false);
@@ -406,9 +427,7 @@ void tickBot(unsigned long now) {
     return;
   }
 
-  // OFF フェーズ明け: 次のシンボル/文字/語へ
-  if (botCode[botMarkIdx] == '\0') {
-    // 現文字を打ち終えた → 次の文字へ
+  if (botCode[botMarkIdx] == '\0') {  // 現文字を打ち終えた → 次の文字へ
     botCharIdx++;
     if (botText[botCharIdx] == '\0') {
       setState(QSO_IDLE);
@@ -416,29 +435,28 @@ void tickBot(unsigned long now) {
       dirty = true;
       return;
     }
-    if (botText[botCharIdx] == ' ') {
-      // 空白: 語間(直前の要素間 1u + 6u = 計 7u)
+    if (botText[botCharIdx] == ' ') {  // 語間(直前の要素間 1u + 6u = 計 7u)
       botCharIdx++;
       if (botText[botCharIdx] == '\0') {
         setState(QSO_IDLE);
+        showBotReply = true;
         dirty = true;
         return;
       }
-      botMarkIdx    = 0;
-      botCode       = encode(botText[botCharIdx]);
+      botMarkIdx = 0;
+      botCode = encode(botText[botCharIdx]);
       botPhaseUntil = now + UNIT_MS * 6;
       dirty = true;
       return;
     }
-    botMarkIdx    = 0;
-    botCode       = encode(botText[botCharIdx]);
+    botMarkIdx = 0;
+    botCode = encode(botText[botCharIdx]);
     botPhaseUntil = now + UNIT_MS * 2;  // 文字間(計 3u)
     dirty = true;
     return;
   }
 
-  // 次のシンボルを ON
-  char mark = botCode[botMarkIdx];
+  char mark = botCode[botMarkIdx];  // 次のシンボルを ON
   botOn = true;
   setBuzzer(true);
   setBotLed(true);
@@ -448,19 +466,16 @@ void tickBot(unsigned long now) {
 // ============================================================
 // WiFi 接続
 // ============================================================
-
-// WiFi 接続 + DHCP 待ち。成功したら true を返す。
-// 失敗しても LCD に状態を出してから false を返す(動作継続)。
-bool connectWifi() {
+// 起動時の接続 + DHCP 待ち。成功で true。失敗しても LCD に状態を出して false を返す。
+static bool connectWifi() {
   lcd.setCursor(0, 0); lcd.print("Connecting WiFi ");
   lcd.setCursor(0, 1); lcd.print("                ");
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED) {
-    if (millis() - t0 > 20000) {
-      Serial.print("WiFi status=");
-      Serial.println(WiFi.status());
+    if (millis() - t0 > WIFI_ASSOC_TIMEOUT_MS) {
+      LOGW("WiFi assoc timeout");
       lcd.setCursor(0, 0); lcd.print("WiFi NG         ");
       lcd.setCursor(0, 1); lcd.print("Key mode only   ");
       delay(2000);
@@ -468,366 +483,317 @@ bool connectWifi() {
     }
     delay(500);
   }
-  Serial.print("WiFi associated, RSSI=");
-  Serial.println(WiFi.RSSI());
-
-  // DHCP 待ち
   t0 = millis();
   while (WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
-    if (millis() - t0 > 15000) {
-      Serial.println("DHCP fail");
+    if (millis() - t0 > WIFI_DHCP_TIMEOUT_MS) {
+      LOGW("DHCP fail");
       lcd.setCursor(0, 0); lcd.print("No IP/DHCP      ");
       delay(2000);
       return false;
     }
     delay(500);
   }
-  Serial.print("WiFi OK, IP: ");
-  Serial.println(WiFi.localIP());
+  if (LOG_LEVEL >= 3) {
+    Serial.print("[I] WiFi OK, IP: ");
+    Serial.println(WiFi.localIP());
+  }
   return true;
 }
 
-// WiFi の再接続チェック(loop() 先頭で呼ぶ)。
-// 重要: delay() でブロックすると打鍵/BOT 送出中の millis() タイマが一斉に満了し、
-// モールスのギャップが 0ms に潰れて符号が崩れる。よって IDLE 時のみ、かつ
-// ノンブロッキング(WiFi.begin を1回叩いて以降は status をポーリング)で行う。
-void ensureWifi() {
-  if (!wifiOk) return;            // 起動時失敗した場合は再試行しない
-  if (qso != QSO_IDLE) return;    // 打鍵/API/BOT 送出中はブロックを避け後回し
+// 再接続チェック(loop 先頭で呼ぶ)。ブロックすると打鍵/送出の millis タイマが一斉に
+// 満了し符号が崩れる → IDLE 時のみ、かつノンブロッキング(begin 1回 + status ポーリング)。
+static void ensureWifi() {
+  if (!wifiOk) return;
+  if (qso != QSO_IDLE) return;
   if (WiFi.status() == WL_CONNECTED) { wifiReconnecting = false; return; }
 
   if (!wifiReconnecting) {
-    Serial.println("WiFi dropped, reconnecting...");
+    LOGW("WiFi dropped, reconnecting...");
     lcd.setCursor(0, 1); lcd.print("WiFi reconnect  ");
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     wifiReconnecting = true;
     reconnectStart = millis();
     return;
   }
-  if (millis() - reconnectStart > 15000) {
-    Serial.println("reconnect fail");
+  if (millis() - reconnectStart > WIFI_RECONNECT_MS) {
+    LOGE("WiFi reconnect failed");
     wifiReconnecting = false;
     wifiOk = false;
   }
 }
 
 // ============================================================
-// Gemini API 呼び出し(ブロッキング)
+// Gemini API: リクエスト構築 / レスポンス解析(状態機械から呼ぶ)
 // ============================================================
+// 会話履歴から JSON リクエストボディを reqBody に構築。長さを返す(溢れたら -1)。
+// JSON エスケープは ArduinoJson が処理する(手書き escape は不要)。
+static int buildRequestBody() {
+  JsonDocument doc;
+  doc["system_instruction"]["parts"][0]["text"] = SYSTEM_INSTRUCTION;
 
-// JSON 文字列をエスケープしながら dst に書き込む。
-// 戻り値: 書き込んだバイト数(NUL 除く)。dst は dstMax バイト。
-static int jsonEscape(const char* src, char* dst, int dstMax) {
-  int di = 0;
-  for (int i = 0; src[i] != '\0' && di < dstMax - 2; i++) {
-    char c = src[i];
-    if (c == '"'  || c == '\\') { dst[di++] = '\\'; dst[di++] = c;  }
-    else if (c == '\n')          { dst[di++] = '\\'; dst[di++] = 'n'; }
-    else if (c == '\r')          { dst[di++] = '\\'; dst[di++] = 'r'; }
-    else                         { dst[di++] = c; }
+  // contents[] は user で始まる必要がある(履歴シフトで先頭が model になり得るので調整)。
+  int startIdx = 0;
+  while (startIdx < turnCount && !turns[startIdx].fromMe) startIdx++;
+  if (startIdx >= turnCount) startIdx = 0;
+
+  JsonArray contents = doc["contents"].to<JsonArray>();
+  for (int i = startIdx; i < turnCount; i++) {
+    JsonObject t = contents.add<JsonObject>();
+    t["role"] = turns[i].fromMe ? "user" : "model";
+    t["parts"][0]["text"] = turns[i].text;
   }
-  dst[di] = '\0';
-  return di;
+
+  doc["generationConfig"]["temperature"]   = GEMINI_TEMPERATURE;
+  doc["generationConfig"]["maxOutputTokens"] = GEMINI_MAX_TOKENS;
+  doc["generationConfig"]["thinkingConfig"]["thinkingBudget"] = 0;  // 短文高速応答
+
+  if (measureJson(doc) >= (size_t)sizeof(reqBody)) return -1;
+  return (int)serializeJson(doc, reqBody, sizeof(reqBody));
 }
 
-// callGemini: prompt を Gemini に POST し、返信テキストを outText に書く。
-// 成功すれば true。失敗 or ブロック時は outText に "?" を入れて false を返す。
-// API キーは x-goog-api-key ヘッダで渡す(URL には含めない)。
-bool callGemini(const char* prompt, char* outText, int outMax) {
-  client.stop();  // 前回が half-open でも確実に閉じてから再接続(socket leak 防御)
+// レスポンス先頭行 "HTTP/1.0 200 OK" からステータスコードを取る。失敗で -1。
+static int httpStatusCode(const char* buf) {
+  const char* sp = strchr(buf, ' ');
+  if (!sp) return -1;
+  return atoi(sp + 1);
+}
 
-  // WiFi 接続確認
-  if (WiFi.status() != WL_CONNECTED) {
-    strncpy(outText, "QRX", outMax);
-    outText[outMax - 1] = '\0';
-    return false;
-  }
+// ヘッダ終端(空行)の直後 = ボディ先頭を返す。見つからなければ最初の '{'。
+static const char* httpBody(const char* buf) {
+  const char* p = strstr(buf, "\r\n\r\n");
+  if (p) return p + 4;
+  p = strstr(buf, "\n\n");
+  if (p) return p + 2;
+  return strchr(buf, '{');
+}
 
-  // --- 1. JSON ボディを固定バッファに構築 ---
-  // システム指示とユーザープロンプトをエスケープして埋め込む。
-  // eSys/ePrompt はエスケープ後の余裕込み。256 だと SYSTEM_INSTRUCTION(約409B)や
-  // トランスクリプト入りプロンプトが silently 切り捨てられ Gemini が文脈を失う。
-  char eSys[512], ePrompt[600];
-  jsonEscape(SYSTEM_INSTRUCTION, eSys,    sizeof(eSys));
-  jsonEscape(prompt,             ePrompt, sizeof(ePrompt));
+// ============================================================
+// API 状態機械
+// ============================================================
+// 失敗時の共通処理: TLS を閉じ、CW 略語コードを BOT 送出してデグレード。
+//   code は "QRX"(待機/接続系) か "AGN"(再送/応答系)。履歴には残さない。
+static void apiFail(const char* code) {
+  client.stop();
+  apiPhase = API_NONE;
+  botStart(code);
+}
 
-  int bodyLen = snprintf(reqBody, sizeof(reqBody),
-    "{"
-      "\"system_instruction\":{\"parts\":[{\"text\":\"%s\"}]},"
-      "\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}],"
-      "\"generationConfig\":{"
-        "\"temperature\":0.8,"
-        "\"maxOutputTokens\":200,"
-        "\"thinkingConfig\":{\"thinkingBudget\":0}"
-      "}"
-    "}",
-    eSys, ePrompt);
+// 接続 + リクエスト送信(TLS ハンドシェイク中のみ短くブロック)。成功で true。
+static bool apiConnectAndSend() {
+  int bodyLen = buildRequestBody();
+  if (bodyLen < 0) { LOGE("request body overflow"); return false; }
 
-  if (bodyLen <= 0 || bodyLen >= (int)sizeof(reqBody)) {
-    Serial.println("reqBody overflow");
-    strncpy(outText, "AGN", outMax);  // '?'は符号表に無く無音 → 可聴な AGN(再送)
-    outText[outMax - 1] = '\0';
-    return false;
-  }
+  if (client.connect(GEMINI_HOST, 443) != 1) { LOGW("TLS connect failed"); return false; }
+  client.setTimeout(HTTP_STREAM_TIMEOUT_MS);
 
-  // --- 2. DNS 解決(TLS 失敗と切り分けるための先行チェック) ---
-  IPAddress ip;
-  if (!WiFi.hostByName(GEMINI_HOST, ip)) {
-    Serial.println("DNS fail");
-    strncpy(outText, "QRX", outMax);
-    outText[outMax - 1] = '\0';
-    return false;
-  }
-  Serial.print("DNS resolved: ");
-  Serial.println(ip);
-
-  // --- 3. TLS 接続 ---
-  int rc = client.connect(GEMINI_HOST, 443);
-  Serial.print("TLS connect rc=");
-  Serial.println(rc);
-  if (!rc) {
-    strncpy(outText, "QRX", outMax);
-    outText[outMax - 1] = '\0';
-    return false;
-  }
-  // 各 blocking ストリーム読み(status 行/ヘッダスキップ)の上限を 5s に縛る。
-  // 既定 1s だと遅延サーバで取り逃し、長すぎると遅いヘッダ送出でハングする。
-  client.setTimeout(5000);
-
-  // --- 4. HTTP/1.0 で POST(chunked レスポンスを避けるため 1.0) ---
-  // API キーは x-goog-api-key ヘッダに入れる(URL・Serial に出さない)。
+  // HTTP/1.0 = chunked レスポンスを避ける。API キーはヘッダのみ(URL/ログに出さない)。
   client.print("POST ");
   client.print(GEMINI_PATH);
   client.println(" HTTP/1.0");
   client.print("Host: ");
   client.println(GEMINI_HOST);
   client.print("x-goog-api-key: ");
-  client.println(SECRET_GEMINI_APIKEY);  // ← ヘッダのみ。Serial に print しない。
+  client.println(SECRET_GEMINI_APIKEY);
   client.println("Content-Type: application/json");
   client.print("Content-Length: ");
   client.println(bodyLen);
   client.println("Connection: close");
-  client.println();        // ヘッダ終端の空行
-  client.print(reqBody);   // ボディ(末尾の \r\n は不要)
-
-  // --- 5. レスポンス到着待ち(Gemini の推論 + ネット RTT を考慮して 20 秒) ---
-  unsigned long t0 = millis();
-  while (client.available() == 0) {
-    if (millis() - t0 > 20000) {
-      Serial.println("Gemini timeout");
-      client.stop();
-      strncpy(outText, "QRX", outMax);
-      outText[outMax - 1] = '\0';
-      return false;
-    }
-    if (!client.connected() && client.available() == 0) {
-      Serial.println("Gemini disconnected before response");
-      client.stop();
-      strncpy(outText, "QRX", outMax);
-      outText[outMax - 1] = '\0';
-      return false;
-    }
-  }
-
-  // --- 6. ステータス行確認 ---
-  String statusLine = client.readStringUntil('\n');
-  Serial.print("HTTP status: ");
-  Serial.println(statusLine);
-  int code = statusLine.substring(9, 12).toInt();
-  if (code != 200) {
-    char msg[32];
-    snprintf(msg, sizeof(msg), "HTTP %d", code);
-    Serial.println(msg);
-    client.stop();
-    strncpy(outText, "AGN", outMax);  // '?'は符号表に無く無音 → 可聴な AGN(再送)
-    outText[outMax - 1] = '\0';
-    return false;
-  }
-
-  // --- 7. ヘッダをスキップ(空行まで。wall-clock 5s で打ち切り) ---
-  unsigned long th = millis();
-  while (client.connected() || client.available()) {
-    String line = client.readStringUntil('\n');
-    if (line == "\r" || line.length() == 0) break;
-    if (millis() - th > 5000) {
-      Serial.println("header skip timeout");
-      client.stop();
-      strncpy(outText, "QRX", outMax);
-      outText[outMax - 1] = '\0';
-      return false;
-    }
-  }
-
-  // --- 8. ボディを固定バッファへ全読み(HTTP/1.0 なので chunked なし) ---
-  int n = 0;
-  t0 = millis();
-  while ((client.connected() || client.available()) &&
-         n < (int)sizeof(respBuf) - 1) {
-    if (client.available()) {
-      respBuf[n++] = (char)client.read();
-    } else if (millis() - t0 > 10000) {
-      break;
-    }
-  }
-  respBuf[n] = '\0';
-  client.stop();
-  Serial.print("resp bytes=");
-  Serial.println(n);
-
-  // --- 9. ArduinoJson v7 フィルタ付きパース ---
-  JsonDocument filter;
-  filter["candidates"][0]["content"]["parts"][0]["text"] = true;
-  filter["candidates"][0]["finishReason"]                = true;
-
-  JsonDocument doc;
-  DeserializationError err =
-      deserializeJson(doc, respBuf, DeserializationOption::Filter(filter));
-  if (err) {
-    Serial.print("JSON parse error: ");
-    Serial.println(err.c_str());
-    strncpy(outText, "AGN", outMax);  // '?'は符号表に無く無音 → 可聴な AGN(再送)
-    outText[outMax - 1] = '\0';
-    return false;
-  }
-
-  // null-safe ネストアクセス
-  JsonArray cands = doc["candidates"].as<JsonArray>();
-  if (cands.isNull() || cands.size() == 0) {
-    Serial.println("no candidates (blocked?)");
-    strncpy(outText, "AGN", outMax);  // '?'は符号表に無く無音 → 可聴な AGN(再送)
-    outText[outMax - 1] = '\0';
-    return false;
-  }
-  const char* text = cands[0]["content"]["parts"][0]["text"];
-  if (text == nullptr) {
-    Serial.println("no text field");
-    strncpy(outText, "AGN", outMax);  // '?'は符号表に無く無音 → 可聴な AGN(再送)
-    outText[outMax - 1] = '\0';
-    return false;
-  }
-
-  Serial.print("Gemini raw: ");
-  Serial.println(text);
-
-  // --- 10. 返信テキストを正規化(大文字 + [A-Z0-9 ] + 48字上限) ---
-  char sanitized[BOT_TEXT_MAX + 1];
-  sanitizeForMorse(text, sanitized, sizeof(sanitized));
-  if (sanitized[0] == '\0') {
-    strncpy(sanitized, "AGN", sizeof(sanitized));  // 空応答 → 可聴な AGN(再送)
-  }
-
-  strncpy(outText, sanitized, outMax - 1);
-  outText[outMax - 1] = '\0';
-  Serial.print("Gemini sanitized: ");
-  Serial.println(outText);
+  client.println();
+  client.print(reqBody);
   return true;
 }
 
-// ============================================================
-// Gemini 呼び出し + BOT 送出のラッパー
-// ============================================================
-
-// promptSuffix: メッセージの末尾に追加する文脈ヒント(例 "START QSO", "END QSO")。
-// nullptr を渡すと message をそのまま使う。
-void triggerGemini(const char* promptSuffix) {
-  // API 待機中は再トリガーしない
-  if (qso == QSO_API_WAIT || qso == QSO_BOT_SENDING) return;
-
-  setState(QSO_API_WAIT);
-  dirty = true;
-  render();  // "TX..." をすぐ表示するため render を即時呼ぶ
-
-  // プロンプト: トランスクリプト + 直前メッセージ + 文脈ヒント
-  char prompt[512];
-  int pLen = 0;
-  if (transcriptLen > 0) {
-    pLen += snprintf(prompt + pLen, sizeof(prompt) - pLen,
-                     "QSO LOG:\n%s\n\nNEW: ", transcript);
-  }
-  if (msgLen > 0) {
-    pLen += snprintf(prompt + pLen, sizeof(prompt) - pLen, "%s", message);
-  }
-  if (promptSuffix != nullptr) {
-    pLen += snprintf(prompt + pLen, sizeof(prompt) - pLen,
-                     (pLen > 0) ? " %s" : "%s", promptSuffix);
-  }
-  if (pLen == 0) {
-    strncpy(prompt, "CQ DE ME", sizeof(prompt));
+// レスポンスを解析し、検証を通れば BOT 送出を開始する。
+static void apiParse() {
+  // client.stop() は成功経路と apiFail() の片方だけが呼ぶ(二重 stop で TLS state を壊さない)。
+  int code = httpStatusCode(respBuf);
+  if (code != 200) {
+    if (LOG_LEVEL >= 2) { Serial.print("[W] HTTP status "); Serial.println(code); }
+    apiFail("AGN");
+    return;
   }
 
-  // トランスクリプトに自局のメッセージを追記
-  if (msgLen > 0) {
-    appendTranscript("ME: ");
-    appendTranscript(message);
-    appendTranscript("\n");
+  const char* body = httpBody(respBuf);
+  if (!body) { LOGW("no response body"); apiFail("AGN"); return; }
+
+  // candidates[0].content.parts[0].text と検証用フィールドだけ抽出。
+  JsonDocument filter;
+  filter["candidates"][0]["content"]["parts"][0]["text"] = true;
+  filter["candidates"][0]["finishReason"] = true;
+  filter["promptFeedback"]["blockReason"] = true;
+
+  JsonDocument doc;
+  DeserializationError err =
+      deserializeJson(doc, body, DeserializationOption::Filter(filter));
+  if (err) { LOGW(err.c_str()); apiFail("AGN"); return; }
+
+  // 入力検証: プロンプト自体がブロックされた場合(安全フィルタ等)。
+  const char* block = doc["promptFeedback"]["blockReason"];
+  if (block) {
+    if (LOG_LEVEL >= 2) { Serial.print("[W] prompt blocked: "); Serial.println(block); }
+    apiFail("QRX");
+    return;
   }
 
-  // Gemini 呼び出し(ブロッキング)
+  const char* finish = doc["candidates"][0]["finishReason"];
+  const char* text   = doc["candidates"][0]["content"]["parts"][0]["text"];
+
+  // STOP / MAX_TOKENS は本文を採用(MAX_TOKENS は途中までだが短文なら実用上問題なし)。
+  // SAFETY / RECITATION / OTHER は使わずデグレード。
+  if (finish && strcmp(finish, "STOP") != 0 && strcmp(finish, "MAX_TOKENS") != 0) {
+    if (LOG_LEVEL >= 2) { Serial.print("[W] finishReason "); Serial.println(finish); }
+    apiFail("QRX");
+    return;
+  }
+  if (!text) { LOGW("no text in response"); apiFail("AGN"); return; }
+
   char reply[BOT_TEXT_MAX + 1];
-  callGemini(prompt, reply, sizeof(reply));
+  sanitizeForMorse(text, reply, sizeof(reply));
+  if (reply[0] == '\0') { LOGW("empty after sanitize"); apiFail("AGN"); return; }
 
-  // トランスクリプトに Gemini の返信を追記
-  appendTranscript("BOT: ");
-  appendTranscript(reply);
-  appendTranscript("\n");
-
-  // BOT 送出開始
+  client.stop();          // 成功経路はここで明示的に閉じる
+  addTurn(false, reply);  // 成功応答のみ履歴へ
+  apiPhase = API_NONE;
   botStart(reply);
 }
 
-// ============================================================
-// prosign ハンドラ
-// ============================================================
+// loop から毎回呼ぶ。1フェーズずつ進める。
+static void apiTick(unsigned long now) {
+  if (qso != QSO_API_WAIT) return;
 
-void handleProsign(Prosign p) {
+  switch (apiPhase) {
+    case API_CONNECT:
+      if (WiFi.status() != WL_CONNECTED) { LOGW("api: WiFi down"); apiFail("QRX"); return; }
+      if (!apiConnectAndSend()) { apiFail("QRX"); return; }
+      respLen = 0;
+      respBuf[0] = '\0';
+      apiPhaseStart = now;
+      apiPhase = API_WAIT;
+      dirty = true;
+      LOGI("api: request sent");
+      return;
+
+    case API_WAIT:
+      if (client.available() > 0) { apiPhase = API_READ; apiPhaseStart = now; dirty = true; return; }
+      if (!client.connected())   { LOGW("api: closed before data"); apiFail("QRX"); return; }
+      if (now - apiPhaseStart > API_WAIT_TIMEOUT_MS) { LOGW("api: wait timeout"); apiFail("QRX"); }
+      return;
+
+    case API_READ: {
+      // 1ループあたり最大 256B 読み(loop の応答性を保つ)。
+      int guard = 0;
+      while (client.available() && respLen < RESP_BUF_MAX - 1 && guard++ < 256) {
+        respBuf[respLen++] = (char)client.read();
+      }
+      respBuf[respLen] = '\0';
+      bool full = (respLen >= RESP_BUF_MAX - 1);
+      if (full || (!client.connected() && client.available() == 0)) {
+        if (full) LOGW("api: response truncated (buffer full)");
+        apiPhase = API_PARSE;
+        return;
+      }
+      if (now - apiPhaseStart > API_READ_TIMEOUT_MS) {
+        LOGW("api: read timeout (parsing partial)");
+        apiPhase = API_PARSE;  // 取得済み分でパースを試みる
+      }
+      return;
+    }
+
+    case API_PARSE:
+      apiParse();
+      return;
+
+    default:
+      return;
+  }
+}
+
+// 進行中の API 呼び出しを中断(クリア時など)。
+static void abortApi() {
+  if (apiPhase != API_NONE) {
+    client.stop();
+    apiPhase = API_NONE;
+    if (qso == QSO_API_WAIT) setState(QSO_IDLE);  // dead state を残さない
+    LOGI("api: aborted");
+  }
+}
+
+// ============================================================
+// Gemini トリガー / prosign ハンドラ
+// ============================================================
+// message + suffix から user ターンのテキストを作る(両方空なら "CQ DE ME")。
+// suffix(START QSO/END QSO 等の文脈)を必ず残すため、先に suffix 分の領域を予約してから
+// message を詰める(message が満杯でも suffix が無言で落ちないようにする)。
+static void composeUserText(char* dst, int max, const char* suffix) {
+  int suffixLen = (suffix && suffix[0]) ? (int)strlen(suffix) + 1 : 0;  // +1 は区切り空白
+  int room = max - 1 - suffixLen;
+  if (room < 0) room = 0;
+
+  int n = 0;
+  if (msgLen > 0) {
+    int copy = (msgLen < room) ? msgLen : room;
+    memcpy(dst, message, copy);
+    n = copy;
+  }
+  dst[n] = '\0';
+
+  if (suffixLen) {
+    if (n > 0) dst[n++] = ' ';
+    strncpy(dst + n, suffix, max - n - 1);
+    dst[max - 1] = '\0';
+    n = (int)strlen(dst);
+  }
+  if (n == 0) {
+    strncpy(dst, "CQ DE ME", max - 1);
+    dst[max - 1] = '\0';
+  }
+}
+
+// 自局メッセージを履歴に積み、非同期 API 呼び出しを開始する(即時 return)。
+static void triggerGemini(const char* suffix) {
+  if (qso == QSO_API_WAIT || qso == QSO_BOT_SENDING) return;
+  if (!wifiOk) { LOGW("gemini trigger but WiFi unavailable"); botStart("QRX"); return; }
+
+  char userText[TURN_TEXT_MAX + 1];
+  composeUserText(userText, sizeof(userText), suffix);
+  addTurn(true, userText);
+
+  setLed(false);
+  setBuzzer(false);
+  setState(QSO_API_WAIT);
+  apiPhase = API_CONNECT;
+  apiPhaseStart = millis();
+  render();      // "TX connect..." を即表示
+  dirty = false; // 同 loop での二重描画を防ぐ
+}
+
+static void handleProsign(Prosign p) {
   switch (p) {
-    case PRO_KA:  // 交信開始 -> Gemini に開局挨拶を求める
-      triggerGemini("START QSO");
-      break;
-    case PRO_AR:  // 通信文終わり -> Gemini に了解応答を求める
-      triggerGemini(nullptr);
-      break;
-    case PRO_K:   // どうぞ(語境界) -> Gemini に返答を求める
-      triggerGemini(nullptr);
-      break;
-    case PRO_SK:  // 交信終了 -> Gemini に締めの 73 を求める
-      triggerGemini("END QSO");
-      // botStart 完了後に IDLE へ。トランスクリプトは次の KA まで保持する。
-      break;
-    case PRO_BT:  // 区切り: 空白を挿入するだけ(Gemini 呼び出しなし)
+    case PRO_KA: triggerGemini("START QSO"); break;  // 交信開始
+    case PRO_AR: triggerGemini(nullptr);     break;  // 通信文終わり
+    case PRO_K:  triggerGemini(nullptr);     break;  // どうぞ(語境界)
+    case PRO_SK: triggerGemini("END QSO");   break;  // 交信終了
+    case PRO_BT:                                      // 区切り: 空白を入れるだけ
       if (msgLen > 0 && message[msgLen - 1] != ' ') appendChar(' ');
       break;
-    default:
-      break;
+    default: break;
   }
 }
 
 // ============================================================
 // リセット
 // ============================================================
-
-// 1字削除(短押し): 入力中の符号があればまずそれを消し、無ければ確定済み末尾1字。
-void backspaceChar() {
-  if (symLen > 0) {
-    symLen = 0;
-    symbol[0] = '\0';
-  } else if (msgLen > 0) {
-    msgLen--;
-    message[msgLen] = '\0';
-  }
-}
-
-void resetMessage() {
+static void resetMessage() {
+  abortApi();
   msgLen = 0;
   message[0] = '\0';
   symLen = 0;
   symbol[0] = '\0';
-  transcriptLen = 0;
-  transcript[0] = '\0';
+  turnCount = 0;
   spaceAdded = true;
+  showBotReply = false;
   qso = QSO_IDLE;
   botOn = false;
-  showBotReply = false;
   setBuzzer(false);
   setLed(false);
   setBotLed(false);
@@ -836,7 +802,6 @@ void resetMessage() {
 // ============================================================
 // setup / loop
 // ============================================================
-
 void setup() {
   Serial.begin(115200);
   pinMode(PIN_KEY,     INPUT_PULLUP);
@@ -857,14 +822,13 @@ void setup() {
   lcd.print("Initializing...");
   delay(1000);
 
-  // WiFi 接続
   wifiOk = connectWifi();
   if (wifiOk) {
     lcd.setCursor(0, 0); lcd.print("WiFi OK         ");
     lcd.setCursor(0, 1); lcd.print("KA to start QSO ");
-    Serial.println("WiFi ready");
+    LOGI("ready");
   } else {
-    Serial.println("WiFi unavailable; keying only mode");
+    LOGW("WiFi unavailable; keying-only mode");
   }
   delay(1500);
 
@@ -875,34 +839,31 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // WiFi 接続状態を維持(切断時は再接続を試みる)
   ensureWifi();
 
-  // --- クリアボタン: 短押し=1字削除 / 長押し(>=LONG_CLEAR_MS)=全消去+BOT中断 ---
+  // --- クリアボタン: 短押し=1字削除 / 長押し=全消去 + API/BOT 中断 ---
   int ce = updateButton(clearBtn);
-  if (ce == 1) {          // 押し始め
+  if (ce == 1) {
     clearPressStart = now;
     clearLongDone = false;
-  } else if (ce == -1) {  // 離した
-    if (!clearLongDone) { // 長押し未発火 → 短押し扱いで1字削除
+  } else if (ce == -1) {
+    if (!clearLongDone) {  // 長押し未発火 → 短押し扱いで1字削除
       backspaceChar();
       ledFlashUntil = now + LED_FLASH_MS;
-      Serial.println("[backspace]");
+      LOGD("backspace");
       dirty = true;
     }
     clearLongDone = false;
   }
-  // 押しっぱなしで閾値超え → 全消去(1回だけ)
-  if (clearBtn.pressed && !clearLongDone &&
-      (now - clearPressStart) >= LONG_CLEAR_MS) {
+  if (clearBtn.pressed && !clearLongDone && (now - clearPressStart) >= LONG_CLEAR_MS) {
     resetMessage();
     clearLongDone = true;
     ledFlashUntil = now + LED_FLASH_MS;
-    Serial.println("[clear all]");
+    LOGI("clear all");
     dirty = true;
   }
 
-  // --- 電鍵: API 待機中・BOT 送出中は無視 ---
+  // --- 電鍵: API 呼び出し中・BOT 送出中は無視(半二重) ---
   if (qso != QSO_BOT_SENDING && qso != QSO_API_WAIT) {
     int e = updateButton(keyBtn);
     if (e == 1) {  // 押し始め
@@ -920,11 +881,9 @@ void loop() {
       char mark = (dur < DASH_MS) ? '.' : '-';
       if (symLen < SYM_MAX) {
         symbol[symLen++] = mark;
-        symbol[symLen]   = '\0';
+        symbol[symLen] = '\0';
       }
       releaseTime = now;
-      Serial.print("mark ");
-      Serial.println(mark);
       dirty = true;
     }
 
@@ -932,49 +891,38 @@ void loop() {
     if (!keyBtn.pressed) {
       if (symLen > 0 && (now - releaseTime) >= LETTER_GAP_MS) {
         Prosign pro = matchProsign(symbol);
-
-        // 語境界での単独 K = 送信権渡し
         bool atWordBoundary = (msgLen == 0 || message[msgLen - 1] == ' ');
-        bool isOver = (strcmp(symbol, "-.-") == 0 && atWordBoundary);
-
+        bool isOver = (strcmp(symbol, "-.-") == 0 && atWordBoundary);  // 語境界の単独 K
         if (pro != PRO_NONE || isOver) {
-          Serial.print("prosign ");
-          Serial.println(symbol);
           handleProsign(isOver ? PRO_K : pro);
         } else {
-          char c   = decode(symbol);
-          char out = c ? c : '?';
-          Serial.print("letter ");
-          Serial.print(symbol);
-          Serial.print(" -> ");
-          Serial.println(out);
-          appendChar(out);
+          char c = decode(symbol);
+          appendChar(c ? c : '?');
         }
-        symLen      = 0;
-        symbol[0]   = '\0';
+        symLen = 0;
+        symbol[0] = '\0';
         ledFlashUntil = now + LED_FLASH_MS;
         dirty = true;
       } else if (symLen == 0 && msgLen > 0 && !spaceAdded &&
                  message[msgLen - 1] != ' ' &&
                  (now - releaseTime) >= WORD_GAP_MS) {
-        // 単語区切り
         appendChar(' ');
         spaceAdded = true;
-        Serial.println("[space]");
         dirty = true;
       }
     }
   }
 
-  // --- BOT 送出エンジン / 自局 LED・ブザー ---
+  // --- エンジン駆動 ---
   if (qso == QSO_BOT_SENDING) {
     tickBot(now);
-  } else if (qso != QSO_API_WAIT) {
+  } else if (qso == QSO_API_WAIT) {
+    apiTick(now);
+  } else {
     setLed(keyBtn.pressed || (now < ledFlashUntil));
     setBuzzer(keyBtn.pressed);
   }
 
-  // --- LCD 更新(変化があった時だけ) ---
   if (dirty) {
     render();
     dirty = false;
